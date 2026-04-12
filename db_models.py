@@ -14,4 +14,10 @@ class YoutubeLibrary(db.Model):
     last_viewed = db.Column(db.DateTime, nullable=True, default=None)
 
     def as_dict(self):
-        return {column.name: getattr(self, column.name) for column in self.__table__.columns}
+        result = {}
+        for column in self.__table__.columns:
+            val = getattr(self, column.name)
+            if hasattr(val, 'isoformat'):
+                val = val.isoformat()
+            result[column.name] = val
+        return result

@@ -1,5 +1,28 @@
 # YouTube Module - Changelog
 
+### Version 0.3.13.1 [for Anagnorisis ≥ 0.3.13] (13.04.2026)
+
+*   **JS runtime** 
+    *    Node.js 20 is now installed in the Docker image via NodeSource (Ubuntu's default v12 was below yt-dlp's v20 minimum). `js_runtimes: {node: {}}` and `remote_components: {ejs:github}` added to the base yt-dlp options so YouTube JS challenges are solved automatically.
+
+*   **Authentication** 
+    *    OAuth2 device-code flow was removed (dropped by yt-dlp 2026.03.17). Authentication is now done by uploading a `cookies.txt` file (Netscape format) via a drag-and-drop modal. The file is saved to the storage directory and the stream-URL cache is cleared on upload.
+
+*   **Playlist import**
+    *    new "**+ Add from playlist**" sidebar button and modal. Accepts any `youtube.com/playlist?list=…` URL, lists all videos via yt-dlp flat extraction, and imports them using the same per-channel subfolder logic as the channel importer. Already-stored videos are skipped. Progress is shown in the sidebar status line.
+
+*   **Scheduled channel sync**
+    *   New background task that automatically checks every tracked channel for newly published videos on a configurable interval (default: every 30 minutes).
+    *   Efficient API usage, 1 flat-extraction call per channel to retrieve the N most-recent video stubs (default `N=15`, configurable). Already-stored videos are detected with a fast filesystem check (no network round-trip). A full metadata fetch is made only for genuinely new videos.
+    *   Channel folders are discovered by scanning for `.channel.yaml` files in the storage directory. The `last_sync` timestamp in each `.channel.yaml` is refreshed after every sync cycle.
+    *   Configurable via `config.defaults.yaml` (or the `YouTube:` section in the root `config.yaml`):
+        *   `channel_update_interval_minutes` (default `30`) - set to `0` to disable.
+        *   `channel_update_recent_count` (default `15`) - how many recent videos to inspect per channel per cycle.
+
+*   **Datetime serialization**
+    *   `YoutubeLibrary.as_dict()` now converts `DateTime` column values to ISO 8601 strings, preventing `TypeError: Object of type datetime is not JSON serializable` when the socket event emitted a video record that contained a `user_rating_date` or `last_viewed` value.
+
+
 ### Version 0.3.13.0 [for Anagnorisis ≥ 0.3.13] (12.04.2026)
 Initial implementation.
 
@@ -13,7 +36,7 @@ Initial implementation.
 *   **Backend (`serve.py`, `fetcher.py`)**
     *   `_YoutubeTextEngine` adapter bridges `FileManager` / `CommonFilters` to the `.link` file format, providing hashing, front-matter reading, and text embedding over `.meta` sidecar files.
     *   `FileManager` and `CommonFilters` (shared infrastructure) handle pagination, sorting, filtering, and semantic search identically to other modules.
-    *   Semantic search (`semantic-metadata` mode) embeds the `.link.meta` content directly — no vision model or auto-description is ever invoked.
+    *   Semantic search (`semantic-metadata` mode) embeds the `.link.meta` content directly - no vision model or auto-description is ever invoked.
     *   Supported sort/filter modes: `file-name` (fuzzy title match), `semantic-metadata`, `rating`, `recommendation`, `recent`, `random`.
     *   Stream proxy: `/youtube_stream/<id>?quality=<q>` fetches a pre-muxed progressive URL via yt-dlp and proxies it to the browser with full HTTP Range support, enabling free seeking and correct total-duration display without downloading the video.
     *   yt-dlp stream URLs are cached in-process for 4 hours to avoid redundant API calls.

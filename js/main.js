@@ -250,9 +250,9 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
         if (r.status === 403 && data.needs_cookies) {
           _errorEl.innerHTML =
             '<strong>YouTube requires sign-in for this video.</strong><br><br>' +
-            '<button class="button is-link is-small" id="yt-error-signin-btn" style="margin-bottom:.5rem">Sign in to YouTube</button>' +
-            '<br><span style="font-size:.85rem; color:#aaa">Or place a <code>cookies.txt</code> (Netscape format, exported from your browser while signed in) in the YouTube module config folder.</span>';
-          document.getElementById('yt-error-signin-btn').addEventListener('click', openOAuthModal);
+            '<button class="button is-link is-small" id="yt-error-signin-btn" style="margin-bottom:.5rem">Upload cookies.txt</button>' +
+            '<br><span style="font-size:.85rem; color:#aaa">Export cookies from your browser while signed into YouTube (Netscape format).</span>';
+          document.getElementById('yt-error-signin-btn').addEventListener('click', openCookiesModal);
         } else {
           _errorEl.textContent = 'Could not load video stream: ' + (data.error || 'unknown error');
         }
@@ -268,6 +268,8 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
   let _addVideoStar = null;
   let _addChannelRating = null;
   let _addChannelStar = null;
+  let _addPlaylistRating = null;
+  let _addPlaylistStar = null;
 
   function openAddVideoModal() {
     const modal = document.getElementById('yt_add_video_modal');
@@ -329,44 +331,65 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
     closeAddChannelModal();
   }
 
-  // ── YouTube OAuth2 sign-in ────────────────────────────────────────────
+  function openAddPlaylistModal() {
+    const modal = document.getElementById('yt_add_playlist_modal');
+    document.getElementById('yt_add_playlist_url').value = '';
+    _addPlaylistRating = null;
 
-  function openOAuthModal() {
-    const modal = document.getElementById('yt-oauth-modal');
-    document.getElementById('yt-oauth-waiting').style.display = '';
-    document.getElementById('yt-oauth-ready').style.display = 'none';
-    document.getElementById('yt-oauth-done').style.display = 'none';
-    document.getElementById('yt-oauth-status').textContent = 'Waiting for your authorisation\u2026';
+    const ratingContainer = document.getElementById('yt_add_playlist_rating');
+    ratingContainer.innerHTML = '';
+    _addPlaylistStar = new StarRatingComponent({
+      initialRating: null,
+      callback: (val) => { _addPlaylistRating = val; },
+    });
+    ratingContainer.appendChild(_addPlaylistStar.issueNewHtmlComponent({ containerType: 'span', isActive: true }));
+
     modal.classList.add('is-active');
-    socket.emit('emit_youtube_page_start_oauth');
   }
 
-  function closeOAuthModal() {
-    document.getElementById('yt-oauth-modal').classList.remove('is-active');
+  function closeAddPlaylistModal() {
+    document.getElementById('yt_add_playlist_modal').classList.remove('is-active');
   }
 
-  socket.on('emit_youtube_page_oauth_event', (data) => {
-    if (data.type === 'device_code') {
-      document.getElementById('yt-oauth-waiting').style.display = 'none';
-      const ready = document.getElementById('yt-oauth-ready');
-      ready.style.display = '';
-      const urlEl = document.getElementById('yt-oauth-url');
-      urlEl.href = data.url;
-      urlEl.textContent = data.url;
-      document.getElementById('yt-oauth-code').textContent = data.code || '';
-    } else if (data.type === 'complete') {
-      document.getElementById('yt-oauth-ready').style.display = 'none';
-      document.getElementById('yt-oauth-waiting').style.display = 'none';
-      const done = document.getElementById('yt-oauth-done');
-      done.style.display = '';
-      if (data.ok) {
-        done.innerHTML = '<p class="has-text-success has-text-centered"><strong>\u2705 Signed in successfully!</strong><br><span style="font-size:.9rem">You can now play videos. Close this modal.</span></p>';
-        document.getElementById('yt_signin_btn').textContent = '\u2713 Signed in';
-      } else {
-        done.innerHTML = `<p class="has-text-danger has-text-centered"><strong>Sign-in failed.</strong><br><span style="font-size:.9rem">${data.error || 'Unknown error'}</span></p>`;
-      }
-    }
-  });
+  function confirmAddPlaylist() {
+    const url = document.getElementById('yt_add_playlist_url').value.trim();
+    if (!url) return;
+    socket.emit('emit_youtube_page_add_playlist', {
+      url: url,
+      user_rating: _addPlaylistRating,
+    });
+    closeAddPlaylistModal();
+  }
+
+  // ── YouTube cookies upload ────────────────────────────────────────────
+
+  function openCookiesModal() {
+    const modal = document.getElementById('yt-cookies-modal');
+    document.getElementById('yt-cookies-status').textContent = '';
+    modal.classList.add('is-active');
+  }
+
+  function closeCookiesModal() {
+    document.getElementById('yt-cookies-modal').classList.remove('is-active');
+  }
+
+  function _uploadCookies(file) {
+    const statusEl = document.getElementById('yt-cookies-status');
+    if (!file) return;
+    statusEl.textContent = 'Uploading…';
+    const reader = new FileReader();
+    reader.onload = () => {
+      socket.emit('emit_youtube_page_upload_cookies', { content: reader.result }, (resp) => {
+        if (resp && resp.ok) {
+          statusEl.innerHTML = '<span class="has-text-success"><strong>\u2705 cookies.txt saved.</strong> You can now play videos.</span>';
+          document.getElementById('yt_signin_btn').textContent = '\u2713 cookies.txt uploaded';
+        } else {
+          statusEl.innerHTML = `<span class="has-text-danger"><strong>Error:</strong> ${resp ? resp.error : 'Unknown error'}</span>`;
+        }
+      });
+    };
+    reader.readAsText(file);
+  }
 
   // ── Page initialisation ───────────────────────────────────────────────
 
@@ -388,11 +411,23 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
     // ── Sidebar buttons ─────────────────────────────────────────────
     document.getElementById('yt_add_video_btn').addEventListener('click', openAddVideoModal);
     document.getElementById('yt_add_channel_btn').addEventListener('click', openAddChannelModal);
-    document.getElementById('yt_signin_btn').addEventListener('click', openOAuthModal);
+    document.getElementById('yt_add_playlist_btn').addEventListener('click', openAddPlaylistModal);
+    document.getElementById('yt_signin_btn').addEventListener('click', openCookiesModal);
 
-    // OAuth modal wiring
-    document.querySelectorAll('.yt-oauth-close').forEach(el =>
-      el.addEventListener('click', closeOAuthModal));
+    // Cookies modal wiring
+    document.querySelectorAll('.yt-cookies-close').forEach(el =>
+      el.addEventListener('click', closeCookiesModal));
+    const dropZone = document.getElementById('yt-cookies-drop');
+    const fileInput = document.getElementById('yt-cookies-file');
+    dropZone.addEventListener('click', () => fileInput.click());
+    dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('drag-over'); });
+    dropZone.addEventListener('dragleave', () => dropZone.classList.remove('drag-over'));
+    dropZone.addEventListener('drop', (e) => {
+      e.preventDefault();
+      dropZone.classList.remove('drag-over');
+      if (e.dataTransfer.files.length) _uploadCookies(e.dataTransfer.files[0]);
+    });
+    fileInput.addEventListener('change', () => { if (fileInput.files.length) _uploadCookies(fileInput.files[0]); });
 
     // Add-video modal wiring
     document.querySelectorAll('.yt-add-video-close').forEach(el =>
@@ -403,6 +438,11 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
     document.querySelectorAll('.yt-add-channel-close').forEach(el =>
       el.addEventListener('click', closeAddChannelModal));
     document.getElementById('yt_add_channel_confirm').addEventListener('click', confirmAddChannel);
+
+    // Add-playlist modal wiring
+    document.querySelectorAll('.yt-add-playlist-close').forEach(el =>
+      el.addEventListener('click', closeAddPlaylistModal));
+    document.getElementById('yt_add_playlist_confirm').addEventListener('click', confirmAddPlaylist);
 
     // Player modal close
     document.getElementById('yt-player-modal-bg').addEventListener('click', closePlayer);
@@ -481,6 +521,12 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
     socket.on('emit_youtube_page_channel_imported', (data) => {
       document.getElementById('yt_import_status').textContent =
         `Import complete — ${data.count} videos.`;
+      window.location.reload();
+    });
+
+    socket.on('emit_youtube_page_playlist_imported', (data) => {
+      document.getElementById('yt_import_status').textContent =
+        `Playlist import complete — ${data.count} videos.`;
       window.location.reload();
     });
 

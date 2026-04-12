@@ -26,10 +26,9 @@ import rapidfuzz.fuzz
 import modules.YouTube.db_models as db_models
 from modules.YouTube.fetcher import (
     HASH_ALGORITHM, parse_frontmatter, build_frontmatter,
-    _blake2b, fetch_video_info, fetch_channel_videos,
-    extract_stream_url, get_stream_urls, store_video, find_channel_folder,
-    write_channel_yaml, read_channel_yaml, _safe_name,
-    start_oauth2_flow, OAUTH_CACHE_SUBDIR,
+    _blake2b, fetch_video_info, fetch_channel_videos, fetch_channel_recent_videos,
+    fetch_playlist_videos, extract_stream_url, get_stream_urls, store_video,
+    find_channel_folder, write_channel_yaml, read_channel_yaml, _safe_name,
 )
 from src.socket_events import CommonSocketEvents
 from src.text_embedder import TextEmbedder
@@ -39,6 +38,7 @@ from src.caching import TwoLevelCache
 from src.common_filters import CommonFilters, _normalize_text
 from src.recommendation_engine import sort_files_by_recommendation
 from src.module_helpers import register_meta_handlers, make_scheduled_rating_check
+from src.scheduler import schedule_task
 
 
 # ── _YoutubeTextEngine ───────────────────────────────────────────────────
@@ -341,12 +341,10 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
             if cached and cached.get('_expires', 0) > now:
                 return cached
         cookies_path = os.path.join(storage_dir, 'cookies.txt')
-        oauth_cache = os.path.join(storage_dir, OAUTH_CACHE_SUBDIR)
         result = get_stream_urls(
             youtube_id,
             quality=quality,
             cookies_file=cookies_path if os.path.isfile(cookies_path) else None,
-            oauth_cache_dir=oauth_cache,
         )
         if 'error' not in result:
             result['_expires'] = now + 4 * 3600
@@ -550,23 +548,110 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
 
         task_manager.submit(f'Import YouTube channel: {channel_url}', _task_add_channel)
 
-    @socketio.on('emit_youtube_page_start_oauth')
-    def handle_start_oauth(data=None):
-        """Start the YouTube OAuth2 device-code flow in a background task."""
-        oauth_cache = os.path.join(storage_dir, OAUTH_CACHE_SUBDIR)
+    @socketio.on('emit_youtube_page_add_playlist')
+    def handle_add_playlist(data):
+        playlist_url = (data.get('url', '') or '').strip()
+        if not playlist_url:
+            return {'error': 'No playlist URL provided'}
+        user_rating = data.get('user_rating', None)
 
-        def _emit(event_name, payload):
-            socketio.emit('emit_youtube_page_oauth_event', {
-                'type': event_name,
-                **payload,
-            })
+        def _task_add_playlist(ctx):
+            def _status(msg):
+                ctx.check()
+                socketio.emit('emit_youtube_page_import_progress', {'message': msg})
 
-        def _task_oauth(ctx):
-            ctx.update(0.0, 'Connecting to YouTube…')
-            start_oauth2_flow(oauth_cache, _emit)
+            ctx.update(0.05, 'Listing playlist videos…')
+            _status('Listing playlist videos…')
+
+            video_list = fetch_playlist_videos(playlist_url, status_callback=_status)
+            if not video_list:
+                _status('No videos found in this playlist.')
+                return
+
+            total = len(video_list)
+            _status(f'Found {total} videos. Importing…')
+
+            for i, entry in enumerate(video_list):
+                ctx.check()
+                progress = 0.1 + 0.85 * (i / max(total, 1))
+                ctx.update(progress, f'Importing {i + 1}/{total}: {entry.get("title", "")[:50]}…')
+                _status(f'Importing {i + 1}/{total}…')
+
+                vid_url = entry.get('url', '')
+                if not vid_url:
+                    continue
+
+                # Skip already-stored videos
+                vid_id = entry.get('youtube_id', '')
+                if vid_id:
+                    link_files = []
+                    for root, dirs, files in os.walk(storage_dir):
+                        for fn in files:
+                            if fn == f'{vid_id}.link':
+                                link_files.append(os.path.join(root, fn))
+                    if link_files:
+                        continue
+
+                video_info = fetch_video_info(vid_url)
+                if video_info is None:
+                    continue
+
+                subfolder = None
+                if video_info.get('channel_id'):
+                    subfolder = find_channel_folder(storage_dir, video_info['channel_id'])
+                if not subfolder:
+                    subfolder = _safe_name(video_info.get('author', '') or 'uncategorized')
+
+                result = store_video(storage_dir, video_info, subfolder=subfolder)
+                if 'error' in result:
+                    continue
+
+                with app.app_context():
+                    existing = db_models.YoutubeLibrary.query.filter_by(hash=result['hash']).first()
+                    if not existing:
+                        existing = db_models.YoutubeLibrary(
+                            hash=result['hash'],
+                            hash_algorithm=HASH_ALGORITHM,
+                            file_path=result['file_path'],
+                            url=video_info.get('youtube_id', ''),
+                        )
+                        db_models.db.session.add(existing)
+                    if user_rating is not None:
+                        existing.user_rating = float(user_rating)
+                        existing.user_rating_date = datetime.datetime.utcnow()
+                    db_models.db.session.commit()
+
+            _status(f'Playlist import complete — {total} videos processed.')
             ctx.update(1.0, 'Done')
+            socketio.emit('emit_youtube_page_playlist_imported', {'count': total})
 
-        task_manager.submit('YouTube OAuth2 sign-in', _task_oauth)
+        task_manager.submit(f'Import YouTube playlist: {playlist_url}', _task_add_playlist)
+
+    @socketio.on('emit_youtube_page_upload_cookies')
+    def handle_upload_cookies(data):
+        """Save an uploaded cookies.txt file to the YouTube storage directory."""
+        content = (data or {}).get('content', '')
+        if not content or not content.strip():
+            return {'ok': False, 'error': 'Empty file'}
+        # Basic Netscape cookies.txt sanity check
+        stripped = content.lstrip()
+        if not (stripped.startswith('# Netscape HTTP Cookie File') or
+                stripped.startswith('# HTTP Cookie File') or
+                '\t' in stripped.split('\n')[0] if stripped else False):
+            # Be lenient — just check it has tab-separated lines
+            pass
+        cookies_path = os.path.join(storage_dir, 'cookies.txt')
+        try:
+            os.makedirs(storage_dir, exist_ok=True)
+            with open(cookies_path, 'w', encoding='utf-8') as f:
+                f.write(content)
+            print(f'[YouTube] cookies.txt saved to {cookies_path}')
+            # Clear the stream URL cache so new requests use the cookies
+            with _stream_url_lock:
+                _stream_url_cache.clear()
+            return {'ok': True}
+        except Exception as exc:
+            return {'ok': False, 'error': str(exc)}
 
     @socketio.on('emit_youtube_page_get_stream_url')
     def handle_get_stream_url(data):
@@ -647,6 +732,7 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
         filters = {
             'by_text': _filter_by_text,
             'rating': yt_filters.filter_by_rating,
+            'random': yt_filters.filter_by_random, 
             'recommendation': _filter_recommendation,
             'recent': _filter_recent,
         }
@@ -771,5 +857,102 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
     if os.path.exists(evaluator_path):
         _scoring_state['in_progress'] = True
         task_manager.submit('YouTube: score unscored videos', _task_score_videos)
+
+    # ── Scheduled channel sync ───────────────────────────────────────────
+    channel_update_interval = OmegaConf.select(
+        cfg, 'YouTube.channel_update_interval_minutes', default=30)
+    channel_update_recent_count = int(OmegaConf.select(
+        cfg, 'YouTube.channel_update_recent_count', default=15))
+
+    def _task_sync_channels(ctx):
+        """Check every tracked channel for videos newer than what is already stored.
+
+        Cost model: 1 flat-extraction API call per channel + 1 full-metadata
+        call only for each genuinely new video.  All already-stored videos are
+        detected with a fast filesystem check (no network round-trip).
+        """
+        channel_dirs = []
+        try:
+            for entry in os.scandir(storage_dir):
+                if not entry.is_dir():
+                    continue
+                conf = read_channel_yaml(entry.path)
+                if conf and conf.get('channel_url'):
+                    channel_dirs.append((entry.name, entry.path, conf))
+        except OSError as exc:
+            print(f'[YouTube] channel sync scan error: {exc}')
+            return
+
+        if not channel_dirs:
+            return
+
+        total = len(channel_dirs)
+        added_total = 0
+        print(f'[YouTube] Channel sync started — {total} channel(s) tracked.')
+
+        for i, (folder_name, folder_path, conf) in enumerate(channel_dirs):
+            ctx.check()
+            channel_name = conf.get('channel_name') or folder_name
+            ctx.update(i / total, f'Syncing {i + 1}/{total}: {channel_name}')
+
+            channel_url = conf.get('channel_url', '')
+            channel_id = conf.get('channel_id', '')
+            if not channel_url:
+                continue
+
+            # One API call: fetch the N most-recent video stubs for this channel.
+            recent = fetch_channel_recent_videos(channel_url, count=channel_update_recent_count)
+            added = 0
+
+            for video_entry in recent:
+                ctx.check()
+                vid_id = video_entry.get('youtube_id', '')
+                if not vid_id:
+                    continue
+
+                # Fast filesystem check — no network call if already stored.
+                if os.path.exists(os.path.join(folder_path, f'{vid_id}.link')):
+                    continue
+
+                # New video: fetch full metadata (1 additional API call).
+                video_info = fetch_video_info(video_entry['url'])
+                if video_info is None:
+                    continue
+
+                result = store_video(storage_dir, video_info, subfolder=folder_name)
+                if 'error' in result:
+                    continue
+
+                with app.app_context():
+                    existing = db_models.YoutubeLibrary.query.filter_by(
+                        hash=result['hash']).first()
+                    if not existing:
+                        existing = db_models.YoutubeLibrary(
+                            hash=result['hash'],
+                            hash_algorithm=HASH_ALGORITHM,
+                            file_path=result['file_path'],
+                            url=video_info.get('youtube_id', ''),
+                        )
+                        db_models.db.session.add(existing)
+                        db_models.db.session.commit()
+                added += 1
+
+            # Refresh the last_sync timestamp in .channel.yaml.
+            write_channel_yaml(folder_path, channel_id, channel_url,
+                               conf.get('channel_name', ''))
+
+            if added:
+                print(f'[YouTube] {channel_name}: +{added} new video(s).')
+            added_total += added
+
+        ctx.update(1.0,
+                   f'Synced {total} channel(s) — {added_total} new video(s) added.')
+        print(f'[YouTube] Channel sync done — {added_total} new video(s) added.')
+
+    def _check_and_submit_channel_sync():
+        task_manager.submit('YouTube: sync channel updates', _task_sync_channels)
+
+    schedule_task(app, interval_minutes=channel_update_interval,
+                  fn=_check_and_submit_channel_sync)
 
     common_socket_events.show_loading_status('YouTube module ready!')

@@ -117,28 +117,24 @@
     min-height: 1.2em;
   }
 
-  /* OAuth modal */
-  #yt-oauth-modal .modal-card { max-width: 480px; width: 95%; }
-  #yt-oauth-code {
-    font-size: 2rem;
-    font-weight: 700;
-    letter-spacing: .15em;
+  /* Cookies upload modal */
+  #yt-cookies-modal .modal-card { max-width: 520px; width: 95%; }
+  #yt-cookies-drop {
+    border: 2px dashed #ccc;
+    border-radius: 8px;
+    padding: 2rem 1rem;
     text-align: center;
-    padding: .5rem 1rem;
-    background: #f5f5f5;
-    border-radius: 6px;
-    font-family: monospace;
+    cursor: pointer;
+    transition: border-color .2s, background .2s;
   }
-  #yt-oauth-url-wrap {
-    word-break: break-all;
-    text-align: center;
-    margin-top: .5rem;
+  #yt-cookies-drop.drag-over {
+    border-color: #3273dc;
+    background: rgba(50,115,220,.06);
   }
-  #yt-oauth-status {
+  #yt-cookies-status {
     text-align: center;
     margin-top: .75rem;
     font-size: .9rem;
-    color: #666;
     min-height: 1.4em;
   }
 </style>
@@ -155,8 +151,11 @@
     <button class="button is-info is-fullwidth mb-3" id="yt_add_channel_btn">
       + Add channel
     </button>
+    <button class="button is-info is-fullwidth mb-3" id="yt_add_playlist_btn">
+      + Add from playlist
+    </button>
     <button class="button is-fullwidth mb-4" id="yt_signin_btn" style="font-size:.85rem;">
-      Sign in to YouTube
+      Upload cookies.txt
     </button>
 
     <!-- Folder tree -->
@@ -196,32 +195,31 @@
   </div>
 </div>
 
-<!-- ── YouTube OAuth2 sign-in modal ─────────────────────────────────── -->
-<div class="modal" id="yt-oauth-modal">
-  <div class="modal-background yt-oauth-close"></div>
+<!-- ── YouTube cookies upload modal ────────────────────────────────── -->
+<div class="modal" id="yt-cookies-modal">
+  <div class="modal-background yt-cookies-close"></div>
   <div class="modal-card">
     <header class="modal-card-head py-4 px-4">
-      <p class="modal-card-title">Sign in to YouTube</p>
-      <button class="delete yt-oauth-close" aria-label="close"></button>
+      <p class="modal-card-title">Upload cookies.txt</p>
+      <button class="delete yt-cookies-close" aria-label="close"></button>
     </header>
     <section class="modal-card-body">
-      <div id="yt-oauth-waiting">
-        <p class="has-text-centered">Connecting to YouTube…</p>
-        <progress class="progress is-info mt-3" max="100"></progress>
+      <p class="mb-3">YouTube requires browser cookies to stream age-restricted or sign-in-gated videos.</p>
+      <ol class="mb-4" style="padding-left:1.2rem; font-size:.9rem;">
+        <li>Install a cookie-export extension (e.g. <em>Get cookies.txt LOCALLY</em>).</li>
+        <li>Go to <a href="https://www.youtube.com" target="_blank" rel="noopener">youtube.com</a> while signed in.</li>
+        <li>Export cookies as <strong>Netscape / cookies.txt</strong> format.</li>
+        <li>Drop the file below or click to browse.</li>
+      </ol>
+      <div id="yt-cookies-drop">
+        <p><i class="fa-solid fa-file-arrow-up fa-2x" style="color:#999"></i></p>
+        <p class="mt-2">Drop <code>cookies.txt</code> here or click to browse</p>
+        <input type="file" id="yt-cookies-file" accept=".txt" style="display:none">
       </div>
-      <div id="yt-oauth-ready" style="display:none;">
-        <p>Open this URL in your browser (you’re probably already signed into YouTube there):</p>
-        <p id="yt-oauth-url-wrap" class="mt-2">
-          <a id="yt-oauth-url" href="" target="_blank" rel="noopener"></a>
-        </p>
-        <p class="mt-4 mb-1"><strong>Then enter this code on that page:</strong></p>
-        <div id="yt-oauth-code"></div>
-        <p id="yt-oauth-status">Waiting for your authorisation…</p>
-      </div>
-      <div id="yt-oauth-done" style="display:none;"></div>
+      <p id="yt-cookies-status"></p>
     </section>
     <footer class="modal-card-foot py-2 px-3 is-justify-content-flex-end">
-      <button class="button yt-oauth-close">Close</button>
+      <button class="button yt-cookies-close">Close</button>
     </footer>
   </div>
 </div>
@@ -251,6 +249,37 @@
       <div class="buttons">
         <button class="button is-link" id="yt_add_video_confirm">Add video</button>
         <button class="button yt-add-video-close">Cancel</button>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- ── Add playlist modal ────────────────────────────────────────────── -->
+<div class="modal" id="yt_add_playlist_modal">
+  <div class="modal-background yt-add-playlist-close"></div>
+  <div class="modal-card" style="max-width: 520px; width: 95%;">
+    <header class="modal-card-head py-4 px-4">
+      <p class="modal-card-title">Import YouTube playlist</p>
+      <button class="delete yt-add-playlist-close" aria-label="close"></button>
+    </header>
+    <section class="modal-card-body">
+      <div class="field">
+        <label class="label">Playlist URL</label>
+        <div class="control">
+          <input class="input" id="yt_add_playlist_url" type="url"
+                 placeholder="https://www.youtube.com/playlist?list=PL...">
+        </div>
+        <p class="help">Paste a playlist URL, e.g. https://www.youtube.com/playlist?list=PL...</p>
+      </div>
+      <div class="field mt-4">
+        <label class="label">Default rating for all videos (optional)</label>
+        <div id="yt_add_playlist_rating"></div>
+      </div>
+    </section>
+    <footer class="modal-card-foot py-2 px-3 is-justify-content-flex-end">
+      <div class="buttons">
+        <button class="button is-info" id="yt_add_playlist_confirm">Import playlist</button>
+        <button class="button yt-add-playlist-close">Cancel</button>
       </div>
     </footer>
   </div>

@@ -118,6 +118,8 @@ _YDL_BASE = {
     'no_warnings': True,
     'skip_download': True,
     'no_color': True,
+    'js_runtimes': {'node': {}},
+    'remote_components': {'ejs:github'},
 }
 
 
@@ -221,79 +223,93 @@ def fetch_channel_videos(channel_url: str, status_callback=None) -> list[dict]:
     return results
 
 
-_BOT_PATTERNS = ('sign in to confirm', 'not a bot', '--cookies')
+def fetch_channel_recent_videos(channel_url: str, count: int = 15) -> list[dict]:
+    """Return up to *count* most-recent video entries for a channel.
 
-OAUTH_CACHE_SUBDIR = '.yt-dlp-cache'
+    Uses flat extraction (one HTTP round-trip) so the cost per channel is a
+    single API call regardless of how many videos the channel has published.
+    YouTube's /videos tab returns videos in reverse-chronological order, so
+    the first *count* entries are always the newest ones.
 
-_DEVICE_URL_RE = re.compile(r'https://www\.google\.com/device\S*')
-_DEVICE_CODE_RE = re.compile(r'\b([A-Z0-9]{4}-[A-Z0-9]{4})\b')
-
-
-class _OAuth2Logger:
-    """yt-dlp logger that captures the OAuth2 device-code URL and code.
-    All to_screen() calls go to debug() when a custom logger is provided.
+    Each entry dict: youtube_id, title, url.
     """
-    def __init__(self, event_cb):
-        self._cb = event_cb
-        self._emitted = False
+    _KNOWN_TABS = ('/videos', '/shorts', '/live', '/streams', '/releases')
+    listing_url = channel_url.rstrip('/')
+    if not any(listing_url.endswith(t) for t in _KNOWN_TABS):
+        listing_url = listing_url + '/videos'
 
-    def _scan(self, msg: str):
-        if self._emitted:
-            return
-        url_m = _DEVICE_URL_RE.search(msg)
-        if not url_m:
-            return
-        self._emitted = True
-        code_m = _DEVICE_CODE_RE.search(msg)
-        self._cb('device_code', {
-            'url': url_m.group(0).rstrip('.,)'),
-            'code': code_m.group(1) if code_m else None,
-        })
-
-    def debug(self, msg): self._scan(msg)
-    def info(self, msg): self._scan(msg)
-    def warning(self, msg): self._scan(msg)
-    def error(self, msg): self._cb('error', {'message': msg})
-
-
-def start_oauth2_flow(cache_dir: str, event_cb) -> dict:
-    """Run yt-dlp's YouTube OAuth2 device-code flow.
-
-    *event_cb(event_name, payload)* is called with:
-      ('device_code', {'url': ..., 'code': ...})   – when the code is ready
-      ('complete',    {'ok': True})                 – on success
-      ('complete',    {'ok': False, 'error': ...})  – on failure
-
-    Blocks until authorization completes or fails. Run in a background thread.
-    """
-    os.makedirs(cache_dir, exist_ok=True)
-    logger = _OAuth2Logger(event_cb)
     opts = {
         **_YDL_BASE,
-        'quiet': False,   # ignored with custom logger, but explicit
-        'username': 'oauth2',
-        'password': '',
-        'cachedir': cache_dir,
-        'logger': logger,
+        'extract_flat': True,
+        'playlistend': count,
     }
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            # Any YouTube URL triggers the auth check.
-            # Video-level errors (unavailable, geo-block) are acceptable.
-            ydl.extract_info(
-                'https://www.youtube.com/watch?v=dQw4w9WgXcQ',
-                download=False,
-            )
-        event_cb('complete', {'ok': True})
-        return {'ok': True}
+            info = ydl.extract_info(listing_url, download=False)
     except Exception as exc:
-        err = str(exc)
-        if _is_bot_error(err):
-            event_cb('complete', {'ok': False, 'error': 'Authorization was not completed.'})
-            return {'ok': False, 'error': err}
-        # Other errors (geo-block, unavailable video) are fine — auth succeeded.
-        event_cb('complete', {'ok': True})
-        return {'ok': True}
+        print(f"[YouTube/fetcher] channel recent-videos error for {channel_url}: {exc}")
+        return []
+
+    if info is None:
+        return []
+
+    entries = info.get('entries') or []
+    results = []
+    for entry in entries:
+        vid_id = entry.get('id', '')
+        if not vid_id:
+            continue
+        if len(vid_id) == 24 and vid_id.startswith('UC'):
+            continue
+        results.append({
+            'youtube_id': vid_id,
+            'title': entry.get('title', ''),
+            'url': entry.get('url', '') or f'https://www.youtube.com/watch?v={vid_id}',
+        })
+    return results
+
+
+def fetch_playlist_videos(playlist_url: str, status_callback=None) -> list[dict]:
+    """Return a list of basic video info dicts for all videos in a playlist.
+    Each dict has at least youtube_id, title, url."""
+    opts = {
+        **_YDL_BASE,
+        'extract_flat': True,
+        'playlistend': 5000,
+    }
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(playlist_url, download=False)
+    except Exception as exc:
+        print(f"[YouTube/fetcher] Playlist extraction error: {exc}")
+        return []
+
+    if info is None:
+        return []
+
+    entries = info.get('entries') or []
+    results = []
+    for i, entry in enumerate(entries):
+        vid_id = entry.get('id', '')
+        if not vid_id:
+            continue
+        # Skip channel-level entries
+        if len(vid_id) == 24 and vid_id.startswith('UC'):
+            continue
+        results.append({
+            'youtube_id': vid_id,
+            'title': entry.get('title', ''),
+            'url': entry.get('url', '') or f'https://www.youtube.com/watch?v={vid_id}',
+        })
+        if status_callback and (i + 1) % 50 == 0:
+            status_callback(f'Listed {i + 1} videos…')
+
+    if status_callback:
+        status_callback(f'Found {len(results)} videos.')
+    return results
+
+
+_BOT_PATTERNS = ('sign in to confirm', 'not a bot', '--cookies')
 
 
 def _is_bot_error(message: str) -> bool:
@@ -318,22 +334,16 @@ QUALITY_FORMATS: dict[str, str] = {
 }
 
 
-def _build_ydl_opts(cookies_file: str | None, oauth_cache_dir: str | None,
+def _build_ydl_opts(cookies_file: str | None,
                     extra: dict | None = None) -> dict:
     opts = {**_YDL_BASE, **(extra or {})}
     if cookies_file and os.path.isfile(cookies_file):
         opts['cookiefile'] = cookies_file
-    elif oauth_cache_dir and os.path.isdir(oauth_cache_dir) and \
-            any(True for _ in os.scandir(oauth_cache_dir)):
-        opts['username'] = 'oauth2'
-        opts['password'] = ''
-        opts['cachedir'] = oauth_cache_dir
     return opts
 
 
 def get_stream_urls(youtube_id: str, quality: str = '1080',
-                    cookies_file: str | None = None,
-                    oauth_cache_dir: str | None = None) -> dict:
+                    cookies_file: str | None = None) -> dict:
     """Extract a direct stream URL for a video at the requested quality.
 
     Returns one of:
@@ -343,7 +353,7 @@ def get_stream_urls(youtube_id: str, quality: str = '1080',
     """
     fmt = QUALITY_FORMATS.get(quality, QUALITY_FORMATS['1080'])
     url = f'https://www.youtube.com/watch?v={youtube_id}'
-    opts = _build_ydl_opts(cookies_file, oauth_cache_dir, {'format': fmt})
+    opts = _build_ydl_opts(cookies_file, {'format': fmt})
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
             info = ydl.extract_info(url, download=False)
@@ -363,13 +373,12 @@ def get_stream_urls(youtube_id: str, quality: str = '1080',
         return {'error': err}
 
 
-def extract_stream_url(youtube_id: str, cookies_file: str | None = None,
-                       oauth_cache_dir: str | None = None) -> dict:
+def extract_stream_url(youtube_id: str, cookies_file: str | None = None) -> dict:
     """Get a direct playable stream URL for a video (legacy helper; prefer get_stream_urls).
     Returns {'url': ..., 'ext': ..., 'height': ...} or {'error': ..., 'needs_cookies': True}.
     """
     return get_stream_urls(youtube_id, quality='1080',
-                           cookies_file=cookies_file, oauth_cache_dir=oauth_cache_dir)
+                           cookies_file=cookies_file)
 
 
 # ---------------------------------------------------------------------------
