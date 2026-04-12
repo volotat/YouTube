@@ -1,0 +1,9 @@
+# Default configuration for the YouTube module.
+# These values are auto-merged into the main config at startup.
+# Override any of them by adding a `YouTube:` section to root config.yaml.
+
+YouTube:
+  name: YouTube
+  storage_directory: /mnt/project_config/modules/YouTube
+  media_formats:
+    - .link

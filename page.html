@@ -1,0 +1,321 @@
+<script type="module" src="modules/YouTube/js/main.js"></script>
+
+<style>
+  /* ── YouTube card grid ─────────────────────────────────────────────── */
+  .yt-card {
+    cursor: pointer;
+    position: relative;
+    border-radius: 8px;
+    overflow: hidden;
+    transition: box-shadow .15s, transform .1s;
+  }
+  .yt-card:hover {
+    box-shadow: 0 4px 14px rgba(0,0,0,.12);
+    transform: translateY(-2px);
+  }
+  .yt-card-thumb {
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    object-fit: cover;
+    display: block;
+    background: #222;
+  }
+  .yt-card-duration {
+    position: absolute;
+    bottom: 2px;
+    right: 6px;
+    background: rgba(0,0,0,.8);
+    color: #fff;
+    font-size: .75rem;
+    padding: 1px 5px;
+    border-radius: 3px;
+    pointer-events: none;
+  }
+  .yt-card-info {
+    padding: .5rem .6rem;
+  }
+  .yt-card-title {
+    font-weight: 600;
+    overflow: hidden;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+  }
+  .yt-card-author {
+    font-size: .78rem;
+    color: #888;
+    margin-top: .2rem;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .yt-card-rating {
+    margin-top: .3rem;
+  }
+
+  /* ── Player modal ──────────────────────────────────────────────────── */
+  #yt-player-modal .modal-content {
+    width: 98vw;
+    max-width: 1920px;
+    max-height: 98vh;
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    justify-content: flex-start;
+    padding: 0;
+  }
+  #yt-modal-video {
+    width: 100%;
+    /* fill remaining height after the ~85px info bar */
+    height: calc(98vh - 115px);
+    max-height: calc(98vh - 115px);
+    background: #000;
+    display: block;
+  }
+  #yt-modal-info {
+    width: 100%;
+    padding: .4rem .75rem .5rem;
+    color: #ccc;
+    flex-shrink: 0;
+  }
+  #yt-modal-error {
+    display: none;
+    width: 100%;
+    margin-top: .75rem;
+    padding: .75rem 1rem;
+    background: #2a1a1a;
+    border-left: 3px solid #e74c3c;
+    border-radius: 4px;
+    color: #f0a0a0;
+    font-size: .9rem;
+    line-height: 1.5;
+  }
+  #yt-modal-error a { color: #f5b7b7; text-decoration: underline; }
+  #yt-modal-error code {
+    background: #3a2020;
+    padding: 1px 5px;
+    border-radius: 3px;
+    font-size: .85em;
+    color: #ffc4c4;
+  }
+  #yt-modal-title {
+    font-size: 1.1rem;
+    font-weight: 600;
+    color: #fff;
+  }
+  #yt-modal-author {
+    font-size: .85rem;
+    color: #aaa;
+    margin-top: .15rem;
+  }
+  #yt-modal-rating-container {
+    margin-top: .4rem;
+  }
+
+  /* Import progress */
+  #yt_import_status {
+    min-height: 1.2em;
+  }
+
+  /* OAuth modal */
+  #yt-oauth-modal .modal-card { max-width: 480px; width: 95%; }
+  #yt-oauth-code {
+    font-size: 2rem;
+    font-weight: 700;
+    letter-spacing: .15em;
+    text-align: center;
+    padding: .5rem 1rem;
+    background: #f5f5f5;
+    border-radius: 6px;
+    font-family: monospace;
+  }
+  #yt-oauth-url-wrap {
+    word-break: break-all;
+    text-align: center;
+    margin-top: .5rem;
+  }
+  #yt-oauth-status {
+    text-align: center;
+    margin-top: .75rem;
+    font-size: .9rem;
+    color: #666;
+    min-height: 1.4em;
+  }
+</style>
+
+<!-- PAGE MAIN CONTENT -->
+<div class="container is-fluid columns is-centered py-6 mb-6">
+  <!-- ── Sidebar ──────────────────────────────────────────────────────── -->
+  <aside class="column is-2 menu">
+    <p class="menu-label">YouTube</p>
+
+    <button class="button is-info is-fullwidth mb-3" id="yt_add_video_btn">
+      + Add video
+    </button>
+    <button class="button is-info is-fullwidth mb-3" id="yt_add_channel_btn">
+      + Add channel
+    </button>
+    <button class="button is-fullwidth mb-4" id="yt_signin_btn" style="font-size:.85rem;">
+      Sign in to YouTube
+    </button>
+
+    <!-- Folder tree -->
+    <div id="yt_folder_tree"></div>
+
+    <!-- Import progress -->
+    <p class="help mt-3" id="yt_import_status"></p>
+  </aside>
+
+  <!-- ── Main content ─────────────────────────────────────────────────── -->
+  <div class="column">
+    <!-- Search bar -->
+    <div id="search_bar_container" class="mb-4"></div>
+
+    <!-- Top pagination + status -->
+    <nav class="level mt-4">
+      <nav id="yt-pagination-top" class="pagination is-rounded level-left mb-0" role="navigation" aria-label="pagination">
+        <ul class="pagination-list"></ul>
+      </nav>
+      <div class="level-right">
+        <p class="image-search-status">...</p>
+      </div>
+    </nav>
+
+    <!-- Grid -->
+    <div id="youtube_files_grid_container"></div>
+
+    <!-- Bottom pagination -->
+    <nav class="level mt-6">
+      <nav id="yt-pagination-bottom" class="pagination is-rounded level-left mb-0" role="navigation" aria-label="pagination">
+        <ul class="pagination-list"></ul>
+      </nav>
+      <div class="level-right">
+        <p class="image-search-status"></p>
+      </div>
+    </nav>
+  </div>
+</div>
+
+<!-- ── YouTube OAuth2 sign-in modal ─────────────────────────────────── -->
+<div class="modal" id="yt-oauth-modal">
+  <div class="modal-background yt-oauth-close"></div>
+  <div class="modal-card">
+    <header class="modal-card-head py-4 px-4">
+      <p class="modal-card-title">Sign in to YouTube</p>
+      <button class="delete yt-oauth-close" aria-label="close"></button>
+    </header>
+    <section class="modal-card-body">
+      <div id="yt-oauth-waiting">
+        <p class="has-text-centered">Connecting to YouTube…</p>
+        <progress class="progress is-info mt-3" max="100"></progress>
+      </div>
+      <div id="yt-oauth-ready" style="display:none;">
+        <p>Open this URL in your browser (you’re probably already signed into YouTube there):</p>
+        <p id="yt-oauth-url-wrap" class="mt-2">
+          <a id="yt-oauth-url" href="" target="_blank" rel="noopener"></a>
+        </p>
+        <p class="mt-4 mb-1"><strong>Then enter this code on that page:</strong></p>
+        <div id="yt-oauth-code"></div>
+        <p id="yt-oauth-status">Waiting for your authorisation…</p>
+      </div>
+      <div id="yt-oauth-done" style="display:none;"></div>
+    </section>
+    <footer class="modal-card-foot py-2 px-3 is-justify-content-flex-end">
+      <button class="button yt-oauth-close">Close</button>
+    </footer>
+  </div>
+</div>
+
+<!-- ── Add video modal ────────────────────────────────────────────────── -->
+<div class="modal" id="yt_add_video_modal">
+  <div class="modal-background yt-add-video-close"></div>
+  <div class="modal-card" style="max-width: 520px; width: 95%;">
+    <header class="modal-card-head py-4 px-4">
+      <p class="modal-card-title">Add YouTube video</p>
+      <button class="delete yt-add-video-close" aria-label="close"></button>
+    </header>
+    <section class="modal-card-body">
+      <div class="field">
+        <label class="label">Video URL</label>
+        <div class="control">
+          <input class="input" id="yt_add_video_url" type="url"
+                 placeholder="https://www.youtube.com/watch?v=...">
+        </div>
+      </div>
+      <div class="field mt-4">
+        <label class="label">Rate this video (optional)</label>
+        <div id="yt_add_video_rating"></div>
+      </div>
+    </section>
+    <footer class="modal-card-foot py-2 px-3 is-justify-content-flex-end">
+      <div class="buttons">
+        <button class="button is-link" id="yt_add_video_confirm">Add video</button>
+        <button class="button yt-add-video-close">Cancel</button>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- ── Add channel modal ──────────────────────────────────────────────── -->
+<div class="modal" id="yt_add_channel_modal">
+  <div class="modal-background yt-add-channel-close"></div>
+  <div class="modal-card" style="max-width: 520px; width: 95%;">
+    <header class="modal-card-head py-4 px-4">
+      <p class="modal-card-title">Import YouTube channel</p>
+      <button class="delete yt-add-channel-close" aria-label="close"></button>
+    </header>
+    <section class="modal-card-body">
+      <div class="field">
+        <label class="label">Channel URL</label>
+        <div class="control">
+          <input class="input" id="yt_add_channel_url" type="url"
+                 placeholder="https://www.youtube.com/@ChannelName">
+        </div>
+        <p class="help">Paste a channel URL, e.g. https://www.youtube.com/@ChannelName or https://www.youtube.com/channel/UC...</p>
+      </div>
+      <div class="field mt-4">
+        <label class="label">Default rating for all videos (optional)</label>
+        <div id="yt_add_channel_rating"></div>
+      </div>
+    </section>
+    <footer class="modal-card-foot py-2 px-3 is-justify-content-flex-end">
+      <div class="buttons">
+        <button class="button is-info" id="yt_add_channel_confirm">Import channel</button>
+        <button class="button yt-add-channel-close">Cancel</button>
+      </div>
+    </footer>
+  </div>
+</div>
+
+<!-- ── Video player modal ─────────────────────────────────────────────── -->
+<div class="modal" id="yt-player-modal">
+  <div class="modal-background" id="yt-player-modal-bg"></div>
+  <div class="modal-content">
+    <video id="yt-modal-video" controls playsinline preload="none">
+      Your browser does not support the video tag.
+    </video>
+    <div id="yt-modal-error"></div>
+    <div id="yt-modal-info">
+      <div style="display:flex; align-items:flex-start; gap:.75rem; flex-wrap:wrap;">
+        <div style="flex:1; min-width:0;">
+          <div id="yt-modal-title"></div>
+          <div id="yt-modal-author"></div>
+          <div id="yt-modal-rating-container"></div>
+        </div>
+        <div style="flex-shrink:0; padding-top:.2rem;">
+          <div class="select is-small">
+            <select id="yt-quality-select">
+              <option value="2160">4K (2160p)</option>
+              <option value="1440">1440p</option>
+              <option value="1080" selected>1080p</option>
+              <option value="720">720p</option>
+              <option value="480">480p</option>
+              <option value="360">360p</option>
+            </select>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  <button class="modal-close is-large" aria-label="close" id="yt-player-modal-close"></button>
+</div>
