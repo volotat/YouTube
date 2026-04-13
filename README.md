@@ -27,7 +27,4 @@ Videos stream through a server-side proxy that forwards HTTP Range requests to Y
 
 ## Authentication
 
-Some videos require you to be signed in to YouTube. Two methods are supported:
-
-- **OAuth2 device-code flow** — click "Sign in to YouTube" in the sidebar and follow the on-screen instructions. No password is ever stored; the session token is cached locally.
-- **cookies.txt** — export your browser cookies in Netscape format while signed in to YouTube, and place the file as `cookies.txt` inside the storage directory.
+Some videos require you to be signed in to YouTube. To sing-in you need to provide the **cookies.txt** file generated in Netscape format while signed in to YouTube. After providing the file, it is gonna be stored locally as `cookies.txt` inside the storage directory.
