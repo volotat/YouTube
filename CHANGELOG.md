@@ -1,5 +1,9 @@
 # YouTube Module - Changelog
 
+### Version 0.3.13.2 [for Anagnorisis ≥ 0.3.13] (14.04.2026)
+*   **Scheduled channel sync**
+    *   `auto_update` boolean flag added to `.channel.yaml`. Only channels imported via "**+ Add channel**" have `auto_update: true`; videos added individually or through a playlist get `auto_update: false`. Channels written before this field existed default to `true` for backward compatibility. The flag can be toggled manually in the file.
+
 ### Version 0.3.13.1 [for Anagnorisis ≥ 0.3.13] (13.04.2026)
 
 *   **JS runtime** 

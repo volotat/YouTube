@@ -523,7 +523,8 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
                 if not subfolder:
                     subfolder = _safe_name(video_info.get('author', '') or 'uncategorized')
 
-                result = store_video(storage_dir, video_info, subfolder=subfolder)
+                result = store_video(storage_dir, video_info, subfolder=subfolder,
+                                     auto_update=True)
                 if 'error' in result:
                     continue
 
@@ -895,6 +896,11 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
             channel_name = conf.get('channel_name') or folder_name
             ctx.update(i / total, f'Syncing {i + 1}/{total}: {channel_name}')
 
+            # Respect the per-channel auto_update flag.  Missing field → True
+            # so channels created before this feature was added still sync.
+            if not conf.get('auto_update', True):
+                continue
+
             channel_url = conf.get('channel_url', '')
             channel_id = conf.get('channel_id', '')
             if not channel_url:
@@ -937,9 +943,9 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
                         db_models.db.session.commit()
                 added += 1
 
-            # Refresh the last_sync timestamp in .channel.yaml.
+            # Refresh the last_sync timestamp in .channel.yaml; preserve auto_update.
             write_channel_yaml(folder_path, channel_id, channel_url,
-                               conf.get('channel_name', ''))
+                               conf.get('channel_name', ''), auto_update=None)
 
             if added:
                 print(f'[YouTube] {channel_name}: +{added} new video(s).')

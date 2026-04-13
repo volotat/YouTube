@@ -66,7 +66,16 @@ def parse_frontmatter(text: str) -> tuple[dict, str]:
 # ---------------------------------------------------------------------------
 
 def write_channel_yaml(folder: str, channel_id: str, channel_url: str,
-                       channel_name: str = ''):
+                       channel_name: str = '',
+                       auto_update: bool | None = None):
+    """Write or update .channel.yaml in *folder*.
+
+    *auto_update* controls whether the channel participates in the scheduled
+    sync task.  Pass ``True`` for channels added via the "+ Add channel" flow
+    and ``False`` for individual-video / playlist imports.  Pass ``None``
+    (default) to preserve the existing value in the file (for refresh-only
+    updates such as bumping ``last_sync``).
+    """
     path = os.path.join(folder, '.channel.yaml')
     data = {}
     if os.path.exists(path):
@@ -81,6 +90,12 @@ def write_channel_yaml(folder: str, channel_id: str, channel_url: str,
         'channel_name': channel_name,
         'last_sync': datetime.datetime.utcnow().isoformat(),
     })
+    if auto_update is not None:
+        data['auto_update'] = auto_update
+    elif 'auto_update' not in data:
+        # Channels written before this field existed default to True so that
+        # the sync task continues working for pre-existing channel folders.
+        data['auto_update'] = True
     os.makedirs(folder, exist_ok=True)
     with open(path, 'w', encoding='utf-8') as f:
         yaml.safe_dump(data, f, default_flow_style=False)
@@ -400,11 +415,15 @@ def _download_thumbnail(thumbnail_url: str, dest_path: str):
 
 
 def store_video(storage_dir: str, video_info: dict,
-                subfolder: str | None = None) -> dict:
+                subfolder: str | None = None,
+                auto_update: bool = False) -> dict:
     """Write .link + .link.preview.png + .link.meta for a video.
 
     *video_info* is the dict returned by ``fetch_video_info()``.
     *subfolder* overrides the channel folder name.
+    *auto_update* is written into .channel.yaml only when that file is first
+    created.  Pass ``True`` when storing videos as part of a channel import so
+    the channel is picked up by the scheduled sync task.
 
     Returns {'file_path': relative_path, 'hash': blake2b_hash} or
     {'error': ...} on failure.
@@ -425,6 +444,7 @@ def store_video(storage_dir: str, video_info: dict,
             channel_id=video_info['channel_id'],
             channel_url=video_info.get('channel_url', ''),
             channel_name=video_info.get('author', ''),
+            auto_update=auto_update,
         )
 
     # Build frontmatter

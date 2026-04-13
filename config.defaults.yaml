@@ -9,7 +9,7 @@ YouTube:
     - .link
   # How often (minutes) to check tracked channels for newly published videos.
   # Set to 0 to disable automatic channel syncing.
-  channel_update_interval_minutes: 30
+  channel_update_interval_minutes: 720
   # How many of the most-recent videos to inspect per channel per sync cycle.
   # YouTube returns videos newest-first, so this window only needs to cover
   # how many videos a prolific channel could post within the interval above.
