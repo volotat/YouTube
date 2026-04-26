@@ -14,3 +14,8 @@ YouTube:
   # YouTube returns videos newest-first, so this window only needs to cover
   # how many videos a prolific channel could post within the interval above.
   channel_update_recent_count: 50
+  # How often (minutes) to run the transcript backfill task.
+  # Fetches subtitles for existing videos whose .meta files lack transcripts.
+  transcript_backfill_interval_minutes: 40
+  # How many videos to process per backfill cycle.
+  transcript_backfill_batch_size: 100

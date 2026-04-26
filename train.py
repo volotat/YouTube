@@ -9,6 +9,8 @@ import os
 import numpy as np
 from omegaconf import OmegaConf
 
+from modules.YouTube.fetcher import read_video_text
+
 
 def get_training_pairs(cfg, text_embedder, status_callback=None):
     """
@@ -57,15 +59,12 @@ def get_training_pairs(cfg, text_embedder, status_callback=None):
 
         full_path = os.path.join(storage_dir, entry.file_path)
 
-        # Prefer .meta file for richer text
-        meta_path = full_path + '.meta'
-        read_path = meta_path if os.path.exists(meta_path) else full_path
-        if not os.path.exists(read_path):
+        if not os.path.exists(full_path):
             continue
 
         try:
-            with open(read_path, 'r', encoding='utf-8') as f:
-                content = f.read()
+            # Combine .link frontmatter + .link.meta sidecar for richer training signal
+            content = read_video_text(full_path)
 
             if not content or len(content.strip()) < 10:
                 continue

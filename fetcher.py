@@ -7,11 +7,14 @@ codebase never imports yt-dlp directly.
 """
 
 import hashlib
+import io
+import json
 import os
 import re
 import datetime
 import urllib.request
 
+from PIL import Image
 import yaml
 import yt_dlp
 
@@ -113,6 +116,36 @@ def read_channel_yaml(folder: str) -> dict | None:
 
 
 # ---------------------------------------------------------------------------
+# Full-text helpers
+# ---------------------------------------------------------------------------
+
+def read_video_text(link_path: str) -> str:
+    """Return a combined text representation of a stored video.
+
+    Concatenates the raw content of the `.link` file (YAML front-matter with
+    title, author, publish date, preview excerpt …) and the richer `.link.meta`
+    sidecar (full description + tags).  Both sources are complementary: the
+    front-matter contains structured fields that are absent from `.meta`, while
+    `.meta` contains the untruncated description and tag list.
+
+    Either file may be missing; whichever exists is included.
+    """
+    parts = []
+    try:
+        with open(link_path, 'r', encoding='utf-8') as f:
+            parts.append(f.read())
+    except OSError:
+        pass
+    meta_path = link_path + '.meta'
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            parts.append(f.read())
+    except OSError:
+        pass
+    return '\n\n'.join(p for p in parts if p.strip())
+
+
+# ---------------------------------------------------------------------------
 # Sanitise folder / file names
 # ---------------------------------------------------------------------------
 
@@ -122,6 +155,167 @@ _UNSAFE_CHARS = re.compile(r'[<>:"/\\|?*\x00-\x1f]')
 def _safe_name(name: str) -> str:
     name = _UNSAFE_CHARS.sub('_', name).strip().strip('.')
     return name or 'unknown'
+
+
+def make_channel_folder_name(channel_name: str, channel_id: str = '') -> str:
+    """Build a collision-resistant folder name like 'Action Lab (UUasOpd5)'."""
+    safe = _safe_name(channel_name or 'uncategorized')
+    if channel_id:
+        safe = f'{safe} ({channel_id[:8]})'
+    return safe
+
+
+# ---------------------------------------------------------------------------
+# Transcript / subtitle helpers
+# ---------------------------------------------------------------------------
+
+TRANSCRIPT_SEPARATOR = '\n\n--- Transcript ---\n\n'
+
+
+def _format_timestamp(seconds: float) -> str:
+    """Format seconds as H:MM:SS or M:SS."""
+    total = int(seconds)
+    h, rem = divmod(total, 3600)
+    m, s = divmod(rem, 60)
+    return f'{h}:{m:02d}:{s:02d}' if h else f'{m}:{s:02d}'
+
+
+def _parse_json3(data: dict) -> str:
+    """Extract timestamped lines from YouTube json3 subtitle data."""
+    events = data.get('events') or []
+    lines = []
+    for ev in events:
+        segs = ev.get('segs')
+        if not segs:
+            continue
+        text = ''.join(s.get('utf8', '') for s in segs).strip()
+        if not text or text == '\n':
+            continue
+        start_ms = ev.get('tStartMs', 0)
+        ts = _format_timestamp(start_ms / 1000.0)
+        lines.append(f'[{ts}] {text}')
+    return '\n'.join(lines)
+
+
+def _parse_vtt(raw: str) -> str:
+    """Extract timestamped lines from a VTT subtitle string."""
+    lines = []
+    current_ts = None
+    seen = set()
+    for line in raw.splitlines():
+        line = line.strip()
+        # Timestamp line: 00:00:01.230 --> 00:00:04.560
+        m = re.match(r'(\d{1,2}):(\d{2}):(\d{2})\.\d+\s*-->', line)
+        if m:
+            h, mn, s = int(m.group(1)), int(m.group(2)), int(m.group(3))
+            total = h * 3600 + mn * 60 + s
+            current_ts = _format_timestamp(total)
+            continue
+        if not line or line.startswith('WEBVTT') or line.startswith('Kind:') or line.startswith('Language:'):
+            continue
+        if line.isdigit():
+            continue
+        # Strip VTT tags like <c> </c> <00:00:01.230>
+        clean = re.sub(r'<[^>]+>', '', line).strip()
+        if not clean:
+            continue
+        key = clean
+        if key in seen:
+            continue
+        seen.add(key)
+        prefix = f'[{current_ts}] ' if current_ts else ''
+        lines.append(f'{prefix}{clean}')
+    return '\n'.join(lines)
+
+
+def fetch_subtitles(youtube_id: str, cookies_file: str | None = None) -> str:
+    """Fetch subtitles for a video and return formatted text with timestamps.
+
+    Prefers manual subtitles in the video's original language, falls back to
+    auto-generated captions.  Returns an empty string when nothing is available.
+    """
+    url = f'https://www.youtube.com/watch?v={youtube_id}'
+    opts = _build_ydl_opts(cookies_file, {
+        'writesubtitles': True,
+        'writeautomaticsub': True,
+        'subtitlesformat': 'json3/vtt',
+        # Don't filter languages — let yt-dlp return whatever is available
+    })
+
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except Exception as exc:
+        print(f'[YouTube/fetcher] subtitle extraction error: {exc}')
+        return ''
+
+    if info is None:
+        return ''
+
+    # Determine the video's original language
+    orig_lang = info.get('language') or ''
+
+    # Try manual subtitles first, then auto-generated
+    for sub_dict_key in ('subtitles', 'automatic_captions'):
+        subs = info.get(sub_dict_key) or {}
+        if not subs:
+            continue
+
+        # Pick language: prefer original, then 'en', then first available
+        lang = None
+        if orig_lang and orig_lang in subs:
+            lang = orig_lang
+        elif 'en' in subs:
+            lang = 'en'
+        else:
+            lang = next(iter(subs))
+
+        formats = subs.get(lang) or []
+        # Try json3 first
+        for fmt in formats:
+            if fmt.get('ext') == 'json3':
+                try:
+                    sub_url = fmt['url']
+                    req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        data = json.loads(resp.read())
+                    text = _parse_json3(data)
+                    if text.strip():
+                        return text
+                except Exception as exc:
+                    print(f'[YouTube/fetcher] json3 subtitle fetch error: {exc}')
+
+        # Fallback to VTT
+        for fmt in formats:
+            if fmt.get('ext') == 'vtt':
+                try:
+                    sub_url = fmt['url']
+                    req = urllib.request.Request(sub_url, headers={'User-Agent': 'Mozilla/5.0'})
+                    with urllib.request.urlopen(req, timeout=20) as resp:
+                        raw = resp.read().decode('utf-8', errors='replace')
+                    text = _parse_vtt(raw)
+                    if text.strip():
+                        return text
+                except Exception as exc:
+                    print(f'[YouTube/fetcher] vtt subtitle fetch error: {exc}')
+
+    return ''
+
+
+def meta_has_transcript(meta_path: str) -> bool:
+    """Return True if the .meta file already contains a transcript section."""
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            return TRANSCRIPT_SEPARATOR.strip() in f.read()
+    except OSError:
+        return False
+
+
+def append_transcript_to_meta(meta_path: str, transcript: str):
+    """Append a transcript section to an existing .meta file."""
+    with open(meta_path, 'a', encoding='utf-8') as f:
+        f.write(TRANSCRIPT_SEPARATOR)
+        f.write(transcript)
 
 
 # ---------------------------------------------------------------------------
@@ -401,15 +595,17 @@ def extract_stream_url(youtube_id: str, cookies_file: str | None = None) -> dict
 # ---------------------------------------------------------------------------
 
 def _download_thumbnail(thumbnail_url: str, dest_path: str):
-    """Download a thumbnail image to *dest_path*."""
+    """Download a thumbnail, resize to at most 512 px on the longest side,
+    and save as JPEG at quality 85."""
     try:
         req = urllib.request.Request(thumbnail_url, headers={
             'User-Agent': 'Mozilla/5.0',
         })
         with urllib.request.urlopen(req, timeout=15) as resp:
             data = resp.read()
-        with open(dest_path, 'wb') as f:
-            f.write(data)
+        img = Image.open(io.BytesIO(data)).convert('RGB')
+        img.thumbnail((512, 512), Image.LANCZOS)
+        img.save(dest_path, 'JPEG', quality=85, optimize=True)
     except Exception as exc:
         print(f"[YouTube/fetcher] Thumbnail download failed: {exc}")
 
@@ -417,7 +613,7 @@ def _download_thumbnail(thumbnail_url: str, dest_path: str):
 def store_video(storage_dir: str, video_info: dict,
                 subfolder: str | None = None,
                 auto_update: bool = False) -> dict:
-    """Write .link + .link.preview.png + .link.meta for a video.
+    """Write .link + .link.preview.jpg + .link.meta for a video.
 
     *video_info* is the dict returned by ``fetch_video_info()``.
     *subfolder* overrides the channel folder name.
@@ -433,7 +629,10 @@ def store_video(storage_dir: str, video_info: dict,
         return {'error': 'No youtube_id'}
 
     # Determine channel subfolder
-    channel_name = subfolder or _safe_name(video_info.get('author', '') or 'uncategorized')
+    channel_name = subfolder or make_channel_folder_name(
+        video_info.get('author', '') or 'uncategorized',
+        video_info.get('channel_id', ''),
+    )
     folder = os.path.join(storage_dir, channel_name)
     os.makedirs(folder, exist_ok=True)
 
@@ -492,8 +691,20 @@ def store_video(storage_dir: str, video_info: dict,
     # Download thumbnail
     thumb_url = video_info.get('thumbnail_url', '')
     if thumb_url:
-        preview_path = link_path + '.preview.png'
+        preview_path = link_path + '.preview.jpg'
         _download_thumbnail(thumb_url, preview_path)
+
+    # Fetch and append transcript (best-effort; never blocks the import)
+    try:
+        cookies_path = os.path.join(storage_dir, 'cookies.txt')
+        transcript = fetch_subtitles(
+            vid_id,
+            cookies_file=cookies_path if os.path.isfile(cookies_path) else None,
+        )
+        if transcript:
+            append_transcript_to_meta(meta_path, transcript)
+    except Exception as exc:
+        print(f'[YouTube/fetcher] transcript fetch skipped for {vid_id}: {exc}')
 
     rel_path = os.path.relpath(link_path, storage_dir)
     return {'file_path': rel_path, 'hash': file_hash}

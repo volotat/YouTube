@@ -1,5 +1,23 @@
 # YouTube Module - Changelog
 
+### Version 0.3.14.4 [for Anagnorisis ≥ 0.3.14] (26.04.2026)
+*   **Thumbnail compression**
+    *   Thumbnails are now saved as JPEG (quality 85) instead of PNG, resized to at most 512 px on the longest side. This reduces per-video preview size significantly.
+    *   A startup task converts all existing `.preview.png` files in the storage directory to the new format and removes the originals.
+
+### Version 0.3.13.3 [for Anagnorisis ≥ 0.3.13] (20.04.2026)
+*   **Transcripts**
+    *   Subtitles are now fetched for every newly imported video and appended to its `.meta` file with timestamps (e.g. `[1:23] text`). Manual subtitles in the video's original language are preferred; auto-generated captions are used as a fallback.
+    *   A scheduled backfill task runs every 40 minutes and fetches transcripts for already-stored videos that don't have them yet, processing up to 50 videos per cycle.
+    *   Configurable via `transcript_backfill_interval_minutes` and `transcript_backfill_batch_size` in config.
+
+*   **Channel folder naming**
+    *   Channel folders now include a short channel ID suffix (e.g. `Action Lab (UCxxxxxx)`) to prevent name collisions between channels with identical or very similar names.
+    *   Existing folders without the suffix are automatically renamed on startup and all affected database paths are updated.
+
+*   **Richer embeddings and scoring**
+    *   Semantic search, model scoring, and training now use both the `.link` front-matter and the `.meta` sidecar as a single combined text. Previously only `.meta` was used, leaving out structured fields like title, channel name, and publish date.
+
 ### Version 0.3.13.2 [for Anagnorisis ≥ 0.3.13] (14.04.2026)
 *   **Scheduled channel sync**
     *   `auto_update` boolean flag added to `.channel.yaml`. Only channels imported via "**+ Add channel**" have `auto_update: true`; videos added individually or through a playlist get `auto_update: false`. Channels written before this field existed default to `true` for backward compatibility. The flag can be toggled manually in the file.
@@ -20,8 +38,8 @@
     *   Efficient API usage, 1 flat-extraction call per channel to retrieve the N most-recent video stubs (default `N=15`, configurable). Already-stored videos are detected with a fast filesystem check (no network round-trip). A full metadata fetch is made only for genuinely new videos.
     *   Channel folders are discovered by scanning for `.channel.yaml` files in the storage directory. The `last_sync` timestamp in each `.channel.yaml` is refreshed after every sync cycle.
     *   Configurable via `config.defaults.yaml` (or the `YouTube:` section in the root `config.yaml`):
-        *   `channel_update_interval_minutes` (default `30`) - set to `0` to disable.
-        *   `channel_update_recent_count` (default `15`) - how many recent videos to inspect per channel per cycle.
+        *   `channel_update_interval_minutes` (default `720`) - set to `0` to disable.
+        *   `channel_update_recent_count` (default `50`) - how many recent videos to inspect per channel per cycle.
 
 *   **Datetime serialization**
     *   `YoutubeLibrary.as_dict()` now converts `DateTime` column values to ISO 8601 strings, preventing `TypeError: Object of type datetime is not JSON serializable` when the socket event emitted a video record that contained a `user_rating_date` or `last_viewed` value.

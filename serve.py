@@ -2,7 +2,7 @@
 YouTube module – serve.py
 
 Local YouTube browsing: videos stored as .link files with YAML front-matter,
-thumbnails as .link.preview.png, rich metadata in .link.meta.  Videos stream
+thumbnails as .link.preview.jpg, rich metadata in .link.meta.  Videos stream
 via yt-dlp extracted direct URLs in a native <video> player (no YouTube UI).
 
 Architecture mirrors WebSearch (frontmatter, lean DB, custom engine adapter)
@@ -10,12 +10,14 @@ with Videos module presentation (thumbnails, modal player, FileGridComponent).
 """
 
 import os
+import io
 import datetime
 import time
 import threading
 import urllib.request
 import urllib.error
 
+from PIL import Image
 import torch
 from flask import Flask, send_from_directory, Response, request as flask_request, jsonify
 from flask_socketio import SocketIO
@@ -29,6 +31,8 @@ from modules.YouTube.fetcher import (
     _blake2b, fetch_video_info, fetch_channel_videos, fetch_channel_recent_videos,
     fetch_playlist_videos, extract_stream_url, get_stream_urls, store_video,
     find_channel_folder, write_channel_yaml, read_channel_yaml, _safe_name,
+    make_channel_folder_name, read_video_text,
+    fetch_subtitles, meta_has_transcript, append_transcript_to_meta,
 )
 from src.socket_events import CommonSocketEvents
 from src.text_embedder import TextEmbedder
@@ -132,14 +136,10 @@ class _YoutubeTextEngine:
                 rows.append(cached)
                 continue
             try:
-                # Prefer .meta file for richer embedding, fall back to frontmatter
-                meta_path = path + '.meta'
-                if os.path.exists(meta_path):
-                    with open(meta_path, 'r', encoding='utf-8') as fh:
-                        body = fh.read()
-                else:
-                    with open(path, 'r', encoding='utf-8') as fh:
-                        _, body = parse_frontmatter(fh.read())
+                # Combine .link frontmatter + .link.meta sidecar for embedding
+                body = read_video_text(path)
+                if not body:
+                    body = ''
                 emb = self._emb.embed_text(body)
                 vec = np.array(emb).mean(axis=0) if emb is not None and len(emb) else np.zeros(self._emb_dim())
             except Exception:
@@ -240,14 +240,8 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
         if not os.path.exists(full_path):
             return None
         try:
-            # Prefer .meta for richer text
-            meta_path = full_path + '.meta'
-            if os.path.exists(meta_path):
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    body = f.read()
-            else:
-                with open(full_path, 'r', encoding='utf-8') as f:
-                    _, body = parse_frontmatter(f.read())
+            # Combine .link frontmatter + .link.meta sidecar for scoring
+            body = read_video_text(full_path)
             if not body or len(body.strip()) < 10:
                 return None
             chunk_embeddings = text_embedder.embed_text(body)
@@ -431,7 +425,10 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
             if video_info.get('channel_id'):
                 subfolder = find_channel_folder(storage_dir, video_info['channel_id'])
             if not subfolder:
-                subfolder = _safe_name(video_info.get('author', '') or 'uncategorized')
+                subfolder = make_channel_folder_name(
+                    video_info.get('author', '') or 'uncategorized',
+                    video_info.get('channel_id', ''),
+                )
 
             result = store_video(storage_dir, video_info, subfolder=subfolder)
             if 'error' in result:
@@ -521,7 +518,10 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
                 if video_info.get('channel_id'):
                     subfolder = find_channel_folder(storage_dir, video_info['channel_id'])
                 if not subfolder:
-                    subfolder = _safe_name(video_info.get('author', '') or 'uncategorized')
+                    subfolder = make_channel_folder_name(
+                        video_info.get('author', '') or 'uncategorized',
+                        video_info.get('channel_id', ''),
+                    )
 
                 result = store_video(storage_dir, video_info, subfolder=subfolder,
                                      auto_update=True)
@@ -601,7 +601,10 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
                 if video_info.get('channel_id'):
                     subfolder = find_channel_folder(storage_dir, video_info['channel_id'])
                 if not subfolder:
-                    subfolder = _safe_name(video_info.get('author', '') or 'uncategorized')
+                    subfolder = make_channel_folder_name(
+                        video_info.get('author', '') or 'uncategorized',
+                        video_info.get('channel_id', ''),
+                    )
 
                 result = store_video(storage_dir, video_info, subfolder=subfolder)
                 if 'error' in result:
@@ -744,9 +747,11 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
 
             # Preview image path (relative to storage_dir)
             preview_rel = None
-            preview_abs = full_path + '.preview.png'
-            if os.path.exists(preview_abs):
-                preview_rel = os.path.relpath(preview_abs, storage_dir)
+            for _ext in ('.preview.jpg', '.preview.png'):
+                _candidate = full_path + _ext
+                if os.path.exists(_candidate):
+                    preview_rel = os.path.relpath(_candidate, storage_dir)
+                    break
 
             return {
                 'user_rating': db_item.user_rating if db_item else None,
@@ -846,13 +851,95 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
     # Simple adapter so get_full_metadata_description reads the .meta file.
     class _MetaReader:
         def generate_full_description(self, full_path, media_folder):
-            meta_path = full_path + '.meta'
-            if os.path.exists(meta_path):
-                with open(meta_path, 'r', encoding='utf-8') as f:
-                    return f.read()
-            return ''
+            return read_video_text(full_path)
 
     register_meta_handlers(socketio, 'YouTube', lambda: storage_dir, _MetaReader())
+
+    # ── Startup: migrate old channel folder names ────────────────────────
+    def _find_folders_to_migrate():
+        """Return list of (old_name, new_name, old_path) for folders missing the ID suffix."""
+        to_rename = []
+        try:
+            for entry in os.scandir(storage_dir):
+                if not entry.is_dir():
+                    continue
+                conf = read_channel_yaml(entry.path)
+                if not conf:
+                    continue
+                channel_id = conf.get('channel_id', '')
+                if not channel_id:
+                    continue
+                if f'({channel_id[:8]})' in entry.name:
+                    continue
+                channel_name = conf.get('channel_name', '') or entry.name
+                expected = make_channel_folder_name(channel_name, channel_id)
+                to_rename.append((entry.name, expected, entry.path))
+        except OSError:
+            pass
+        return to_rename
+
+    def _task_migrate_channel_folders(ctx):
+        """Rename old channel folders to include channel ID suffix."""
+        to_rename = _find_folders_to_migrate()
+        if not to_rename:
+            return
+
+        total = len(to_rename)
+        print(f'[YouTube] Migrating {total} channel folder(s) to new naming format…')
+
+        for i, (old_name, new_name, old_path) in enumerate(to_rename):
+            ctx.check()
+            ctx.update((i + 1) / total, f'Renaming {old_name} → {new_name}')
+            new_path = os.path.join(storage_dir, new_name)
+            if os.path.exists(new_path):
+                print(f'[YouTube] Skipping {old_name} → {new_name}: target exists')
+                continue
+            try:
+                os.rename(old_path, new_path)
+                with app.app_context():
+                    videos = db_models.YoutubeLibrary.query.filter(
+                        db_models.YoutubeLibrary.file_path.like(f'{old_name}/%')
+                    ).all()
+                    for video in videos:
+                        video.file_path = new_name + video.file_path[len(old_name):]
+                    db_models.db.session.commit()
+                print(f'[YouTube] Renamed: {old_name} → {new_name}')
+            except OSError as exc:
+                print(f'[YouTube] Failed to rename {old_name}: {exc}')
+
+        ctx.update(1.0, f'Migrated {total} folder(s).')
+
+    if _find_folders_to_migrate():
+        task_manager.submit('YouTube: migrate channel folder names',
+                            _task_migrate_channel_folders)
+
+    # ── Startup: convert .preview.png files to .preview.jpg ─────────────
+    def _task_migrate_png_previews(ctx):
+        """Convert leftover .preview.png thumbnails to compressed JPEG and delete the originals."""
+        png_files = []
+        for root, _dirs, files in os.walk(storage_dir):
+            for fn in files:
+                if fn.endswith('.preview.png'):
+                    png_files.append(os.path.join(root, fn))
+        if not png_files:
+            return
+        total = len(png_files)
+        print(f'[YouTube] Converting {total} PNG preview(s) to JPEG…')
+        for i, png_path in enumerate(png_files):
+            ctx.check()
+            ctx.update((i + 1) / total, f'Converting preview {i + 1}/{total}…')
+            jpg_path = png_path[:-4] + '.jpg'
+            try:
+                img = Image.open(png_path).convert('RGB')
+                img.thumbnail((512, 512), Image.LANCZOS)
+                img.save(jpg_path, 'JPEG', quality=85, optimize=True)
+                os.remove(png_path)
+            except Exception as exc:
+                print(f'[YouTube] Failed to convert {png_path}: {exc}')
+        print(f'[YouTube] PNG preview migration done ({total} file(s)).')
+
+    task_manager.submit('YouTube: convert PNG previews to JPEG',
+                        _task_migrate_png_previews)
 
     # ── Startup background tasks ─────────────────────────────────────────
     if os.path.exists(evaluator_path):
@@ -960,5 +1047,60 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None, data_fol
 
     schedule_task(app, interval_minutes=channel_update_interval,
                   fn=_check_and_submit_channel_sync)
+
+    # ── Scheduled transcript backfill ────────────────────────────────────
+    transcript_backfill_interval = OmegaConf.select(
+        cfg, 'YouTube.transcript_backfill_interval_minutes', default=40)
+    transcript_backfill_batch = int(OmegaConf.select(
+        cfg, 'YouTube.transcript_backfill_batch_size', default=50))
+
+    def _task_backfill_transcripts(ctx):
+        """Find .meta files that lack a transcript section and fetch subtitles."""
+        cookies_path = os.path.join(storage_dir, 'cookies.txt')
+        cookies_file = cookies_path if os.path.isfile(cookies_path) else None
+
+        # Collect all .link.meta files missing transcripts
+        candidates = []
+        for root, _dirs, files in os.walk(storage_dir):
+            for fn in files:
+                if not fn.endswith('.link.meta'):
+                    continue
+                meta_path = os.path.join(root, fn)
+                if meta_has_transcript(meta_path):
+                    continue
+                # Derive youtube_id from filename: <id>.link.meta
+                vid_id = fn.rsplit('.link.meta', 1)[0]
+                if vid_id:
+                    candidates.append((vid_id, meta_path))
+
+        if not candidates:
+            return
+
+        batch = candidates[:transcript_backfill_batch]
+        total = len(batch)
+        added = 0
+        print(f'[YouTube] Transcript backfill: {total} video(s) to process '
+              f'({len(candidates)} total remaining).')
+
+        for i, (vid_id, meta_path) in enumerate(batch):
+            ctx.check()
+            ctx.update((i + 1) / total, f'Fetching transcript {i + 1}/{total}…')
+            try:
+                transcript = fetch_subtitles(vid_id, cookies_file=cookies_file)
+                if transcript:
+                    append_transcript_to_meta(meta_path, transcript)
+                    added += 1
+            except Exception as exc:
+                print(f'[YouTube] transcript backfill error for {vid_id}: {exc}')
+
+        ctx.update(1.0, f'Backfilled {added}/{total} transcript(s).')
+        print(f'[YouTube] Transcript backfill done — {added}/{total} fetched.')
+
+    def _check_and_submit_transcript_backfill():
+        task_manager.submit('YouTube: backfill transcripts',
+                            _task_backfill_transcripts)
+
+    schedule_task(app, interval_minutes=transcript_backfill_interval,
+                  fn=_check_and_submit_transcript_backfill)
 
     common_socket_events.show_loading_status('YouTube module ready!')

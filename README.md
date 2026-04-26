@@ -15,10 +15,10 @@ Each video is stored as a set of files inside the configured storage directory:
 ```
 <storage_directory>/
   <channel-name>/
-    .channel.yaml          # channel ID, URL, last sync timestamp
-    <youtube-id>.link      # YAML front-matter: title, author, duration, publish date, URL
-    <youtube-id>.link.meta # plain-text metadata for semantic search (description, tags)
-    <youtube-id>.link.preview.png  # thumbnail image
+    .channel.yaml                   # channel ID, URL, last sync timestamp
+    <youtube-id>.link               # YAML front-matter: title, author, duration, publish date, URL
+    <youtube-id>.link.meta          # plain-text metadata for semantic search (description, tags, subtitles)
+    <youtube-id>.link.preview.jpg   # thumbnail image
 ```
 
 ## Playback

@@ -123,12 +123,12 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
 
     const userRating = document.createElement('p');
     userRating.className = 'file-info file-user-rating';
-    userRating.innerHTML = `<b>User rating:</b>&nbsp;${info.user_rating !== null && info.user_rating !== undefined ? info.user_rating.toFixed(1) : 'N/A'}`;
+    userRating.innerHTML = `<b>User rating:</b>&nbsp;${info.user_rating !== null && info.user_rating !== undefined ? info.user_rating.toFixed(2) : 'N/A'}`;
     wrap.appendChild(userRating);
 
     const modelRating = document.createElement('p');
     modelRating.className = 'file-info file-model-rating';
-    modelRating.innerHTML = `<b>Model rating:</b>&nbsp;${info.model_rating !== null && info.model_rating !== undefined ? info.model_rating.toFixed(1) : 'N/A'}`;
+    modelRating.innerHTML = `<b>Model rating:</b>&nbsp;${info.model_rating !== null && info.model_rating !== undefined ? info.model_rating.toFixed(2) : 'N/A'}`;
     wrap.appendChild(modelRating);
 
     return wrap;
@@ -306,13 +306,13 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
     document.getElementById('yt_add_channel_url').value = '';
     _addChannelRating = null;
 
-    const ratingContainer = document.getElementById('yt_add_channel_rating');
-    ratingContainer.innerHTML = '';
-    _addChannelStar = new StarRatingComponent({
-      initialRating: null,
-      callback: (val) => { _addChannelRating = val; },
-    });
-    ratingContainer.appendChild(_addChannelStar.issueNewHtmlComponent({ containerType: 'span', isActive: true }));
+    // const ratingContainer = document.getElementById('yt_add_channel_rating');
+    // ratingContainer.innerHTML = '';
+    // _addChannelStar = new StarRatingComponent({
+    //   initialRating: null,
+    //   callback: (val) => { _addChannelRating = val; },
+    // });
+    // ratingContainer.appendChild(_addChannelStar.issueNewHtmlComponent({ containerType: 'span', isActive: true }));
 
     modal.classList.add('is-active');
   }
@@ -336,13 +336,13 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
     document.getElementById('yt_add_playlist_url').value = '';
     _addPlaylistRating = null;
 
-    const ratingContainer = document.getElementById('yt_add_playlist_rating');
-    ratingContainer.innerHTML = '';
-    _addPlaylistStar = new StarRatingComponent({
-      initialRating: null,
-      callback: (val) => { _addPlaylistRating = val; },
-    });
-    ratingContainer.appendChild(_addPlaylistStar.issueNewHtmlComponent({ containerType: 'span', isActive: true }));
+    // const ratingContainer = document.getElementById('yt_add_playlist_rating');
+    // ratingContainer.innerHTML = '';
+    // _addPlaylistStar = new StarRatingComponent({
+    //   initialRating: null,
+    //   callback: (val) => { _addPlaylistRating = val; },
+    // });
+    // ratingContainer.appendChild(_addPlaylistStar.issueNewHtmlComponent({ containerType: 'span', isActive: true }));
 
     modal.classList.add('is-active');
   }
