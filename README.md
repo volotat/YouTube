@@ -4,6 +4,11 @@ An Anagnorisis module that treats YouTube purely as a video CDN (content deliver
 
 This can be especially useful if you want to build a safe, distraction-free zone for a child, only the videos you explicitly add are visible, ordered by your own criteria. Or use it yourself to break bad watching habits and build a curated library of content that actually matters to you.
 
+<p align="center">
+  <img src="YouTube-module-preview.png" alt="YouTube module preview"><br>
+  Anagnorisis v0.3.14 · YouTube module v0.3.14.4
+</p>
+
 ## How it works
 
 You add videos or entire channels. The module fetches metadata (title, channel, description, tags, duration, thumbnail) from YouTube and stores it locally as a small `.link` file. The video itself is never downloaded — it is streamed on demand directly from YouTube's CDN when you press play, at the quality you choose. Everything else — searching, sorting, recommendations, ratings — runs locally without any input from YouTube.
