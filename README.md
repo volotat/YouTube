@@ -1,6 +1,6 @@
 # YouTube Module
 
-An Anagnorisis module that treats YouTube purely as a video CDN (content delivery network) - it creates a lean local representation of each video you care about and hands all search, ranking, and recommendations over to Anagnorisis's own algorithms. No YouTube homepage, no autoplay rabbit-holes, no engagement-maximising suggestions.
+An [Anagnorisis](https://github.com/volotat/Anagnorisis) module that treats YouTube purely as a video CDN (content delivery network) - it creates a lean local representation of each video you care about and hands all search, ranking, and recommendations over to Anagnorisis's own algorithms. No YouTube homepage, no autoplay rabbit-holes, no engagement-maximising suggestions.
 
 This can be especially useful if you want to build a safe, distraction-free zone for a child, only the videos you explicitly add are visible, ordered by your own criteria. Or use it yourself to break bad watching habits and build a curated library of content that actually matters to you.
 
