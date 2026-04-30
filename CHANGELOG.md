@@ -1,5 +1,16 @@
 # YouTube Module - Changelog
 
+### Version 0.3.15.5 [for Anagnorisis ≥ 0.3.15] (01.05.2026)
+*   **Scheduler**
+    *   Channel sync and transcript backfill tasks were being queued multiple times in parallel instead of waiting for the previous run to finish. Now fixed.
+*   **Ratings stability**
+    *   User ratings and watch history are now tied to the video ID instead of the file content. Previously, any edit to a `.link` file would silently orphan all stored ratings for that video.
+*   **Category folders**
+    *   Channel folders can now be freely moved into category subfolders (e.g. a `Science/` folder) to organize the library. The module detects new locations automatically — syncing, scoring, and importing all continue to work without any manual steps.
+*   **Folder tree cleanup**
+    *   Hidden folders (names starting with `.`) no longer appear in the sidebar tree.
+    *   Category folders are listed before channel folders, both in alphabetical order.
+
 ### Version 0.3.14.4 [for Anagnorisis ≥ 0.3.14] (26.04.2026)
 *   **Thumbnail compression**
     *   Thumbnails are now saved as JPEG (quality 85) instead of PNG, resized to at most 512 px on the longest side. This reduces per-video preview size significantly.

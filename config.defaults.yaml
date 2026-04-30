@@ -9,13 +9,15 @@ YouTube:
     - .link
   # How often (minutes) to check tracked channels for newly published videos.
   # Set to 0 to disable automatic channel syncing.
-  channel_update_interval_minutes: 720
+  channel_update_interval_minutes: 480
   # How many of the most-recent videos to inspect per channel per sync cycle.
   # YouTube returns videos newest-first, so this window only needs to cover
   # how many videos a prolific channel could post within the interval above.
   channel_update_recent_count: 50
+  # How often (minutes) to score unscored or stale videos (up to 1000 per cycle).
+  score_interval_minutes: 15
   # How often (minutes) to run the transcript backfill task.
   # Fetches subtitles for existing videos whose .meta files lack transcripts.
   transcript_backfill_interval_minutes: 40
   # How many videos to process per backfill cycle.
-  transcript_backfill_batch_size: 100
+  transcript_backfill_batch_size: 50

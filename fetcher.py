@@ -710,15 +710,31 @@ def store_video(storage_dir: str, video_info: dict,
     return {'file_path': rel_path, 'hash': file_hash}
 
 
+def iter_channel_dirs(storage_dir: str):
+    """Yield (rel_path, abs_path, conf) for every channel directory under storage_dir.
+
+    Searches recursively so channels nested inside category subfolders (e.g.
+    ``Science/Action Lab (UCxxx)/``) are discovered just like top-level ones.
+    rel_path is relative to storage_dir (e.g. ``'Science/Action Lab (UCxxx)'``).
+    Only directories that contain a valid .channel.yaml are yielded.
+    """
+    for root, dirs, files in os.walk(storage_dir):
+        # Skip hidden dirs (e.g. .yt-dlp-cache)
+        dirs[:] = [d for d in dirs if not d.startswith('.')]
+        if '.channel.yaml' not in files:
+            continue
+        conf = read_channel_yaml(root)
+        if conf:
+            yield os.path.relpath(root, storage_dir), root, conf
+
+
 def find_channel_folder(storage_dir: str, channel_id: str) -> str | None:
-    """Find an existing channel folder by channel_id in .channel.yaml files."""
-    try:
-        for entry in os.scandir(storage_dir):
-            if not entry.is_dir():
-                continue
-            conf = read_channel_yaml(entry.path)
-            if conf and conf.get('channel_id') == channel_id:
-                return entry.name
-    except OSError:
-        pass
+    """Find an existing channel folder by channel_id in .channel.yaml files.
+
+    Searches recursively so channels inside category subfolders are found.
+    Returns a path relative to storage_dir (e.g. ``'Science/Action Lab (UCxxx)'``).
+    """
+    for rel, _abs, conf in iter_channel_dirs(storage_dir):
+        if conf.get('channel_id') == channel_id:
+            return rel
     return None

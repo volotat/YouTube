@@ -11,7 +11,19 @@ This can be especially useful if you want to build a safe, distraction-free zone
 
 ## How it works
 
-You add videos or entire channels. The module fetches metadata (title, channel, description, tags, duration, thumbnail) from YouTube and stores it locally as a small `.link` file. The video itself is never downloaded — it is streamed on demand directly from YouTube's CDN when you press play, at the quality you choose. Everything else — searching, sorting, recommendations, ratings — runs locally without any input from YouTube.
+You add videos or entire channels. The module fetches metadata (title, channel, description, tags, duration, thumbnail) from YouTube and stores it locally as a small `.link` file. The video itself is never downloaded, instead it is streamed on demand directly from YouTube's CDN when you press play, at the quality you choose. Everything, such as searching, sorting, recommendations and ratings runs locally without any input from YouTube.
+
+## Installation
+
+Make sure you have the version of Anagnorisis no older than v0.3.14, which includes the external modules (i.e. extensions) support.
+Install the module by simply going to the `modules/` directory of your Anagnorisis installation and clone the module repository there:
+
+```bash
+git clone https://github.com/volotat/YouTube.git
+```
+
+Then make sure you are rebuild the Anagnorisis Docker image so all necessary dependencies are installed.
+
 
 ## Local file structure
 
