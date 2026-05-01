@@ -12,6 +12,7 @@ class YoutubeLibrary(db.Model):
     model_rating = db.Column(db.Float, nullable=True)
     model_hash = db.Column(db.String, nullable=True)
     last_viewed = db.Column(db.DateTime, nullable=True, default=None)
+    publish_date = db.Column(db.DateTime, nullable=True, default=None)
 
     def as_dict(self):
         result = {}

@@ -31,6 +31,7 @@ from modules.YouTube.fetcher import (
     fetch_playlist_videos,
     fetch_video_info,
     get_stream_urls,
+    parse_frontmatter,
     read_channel_yaml,
     read_video_text,
     store_video,
@@ -179,11 +180,13 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None,
                                    default='/mnt/project_config/modules/YouTube')
     os.makedirs(storage_dir, exist_ok=True)
 
-    score_interval               = int(OmegaConf.select(cfg, 'YouTube.score_interval_minutes',               default=15))
-    channel_update_interval      =     OmegaConf.select(cfg, 'YouTube.channel_update_interval_minutes',     default=720)
-    channel_update_count         = int(OmegaConf.select(cfg, 'YouTube.channel_update_recent_count',         default=50))
-    transcript_backfill_interval =     OmegaConf.select(cfg, 'YouTube.transcript_backfill_interval_minutes', default=40)
-    transcript_backfill_batch    = int(OmegaConf.select(cfg, 'YouTube.transcript_backfill_batch_size',      default=50))
+    score_interval                    = int(OmegaConf.select(cfg, 'YouTube.score_interval_minutes',                    default=15))
+    channel_update_interval           =     OmegaConf.select(cfg, 'YouTube.channel_update_interval_minutes',           default=720)
+    channel_update_count              = int(OmegaConf.select(cfg, 'YouTube.channel_update_recent_count',               default=50))
+    transcript_backfill_interval      =     OmegaConf.select(cfg, 'YouTube.transcript_backfill_interval_minutes',      default=40)
+    transcript_backfill_batch         = int(OmegaConf.select(cfg, 'YouTube.transcript_backfill_batch_size',            default=50))
+    precise_date_backfill_interval    = int(OmegaConf.select(cfg, 'YouTube.precise_date_backfill_interval_minutes',    default=30))
+    precise_date_backfill_batch       = int(OmegaConf.select(cfg, 'YouTube.precise_date_backfill_batch_size',          default=100))
 
     # ── Cache + embedder + engine ─────────────────────────────────────────
     yt_cache = TwoLevelCache(
@@ -233,6 +236,7 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None,
         engine=engine,
         channel_update_recent_count=channel_update_count,
         transcript_backfill_batch=transcript_backfill_batch,
+        precise_date_backfill_batch=precise_date_backfill_batch,
     )
     yt_filters.update_model_ratings_func = lambda fps: tasks.update_model_ratings(fps, deps)
     task_manager = app.task_manager
@@ -521,6 +525,88 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None,
             return {'mode': 'list', 'channels': channels}
         return {}
 
+    @socketio.on('emit_youtube_page_summarize_selected')
+    def handle_summarize_selected(data):
+        file_paths = list((data or {}).get('file_paths', []))
+        if not file_paths:
+            return {'prompt': 'No videos selected.'}
+
+        # Resolve DB rows for the given full paths so we can access ratings.
+        # file_paths coming from JS are full_path values; convert to relative
+        # for the DB lookup.
+        rel_paths = []
+        for fp in file_paths:
+            rel = os.path.relpath(fp, storage_dir) if os.path.isabs(fp) else fp
+            rel_paths.append(rel)
+
+        rows_by_rel = {}
+        db_rows = db_models.YoutubeLibrary.query.filter(
+            db_models.YoutubeLibrary.file_path.in_(rel_paths)
+        ).all()
+        for row in db_rows:
+            rows_by_rel[row.file_path] = row
+
+        lines = [
+            'You are summarising a hand-picked selection of YouTube videos from a personal '
+            'library. The owner selected these videos specifically and wants a thorough '
+            'write-up of each one.',
+            '',
+            'INSTRUCTIONS:',
+            '- For every video, clearly state the channel name and the video title at the start.',
+            '- Explain the main content in enough detail that the reader can fully understand '
+            'what was covered, what conclusions were reached, what was demonstrated, and whether '
+            'anything is actionable or noteworthy — without needing to watch it.',
+            '- Name specific topics, facts, arguments, people, tools, numbers, or events.',
+            '- Prioritise depth by rating: higher-rated videos deserve thorough write-ups; '
+            'unrated ones may be condensed but must still name the core subject.',
+            '- Begin with a short overview paragraph noting the common themes across these videos.',
+            '',
+            f'Total videos in this selection: {len(rel_paths)}',
+            f'Generated: {datetime.datetime.utcnow().strftime("%Y-%m-%d %H:%M")} UTC',
+            '',
+            '=' * 72,
+        ]
+
+        found = 0
+        for i, rel in enumerate(rel_paths, 1):
+            abs_path = os.path.join(storage_dir, rel) if not os.path.isabs(rel) else rel
+            try:
+                with open(abs_path, 'r', encoding='utf-8') as f:
+                    fm, _ = parse_frontmatter(f.read())
+            except Exception:
+                fm = {}
+            meta_path = abs_path + '.meta'
+            try:
+                meta_text = open(meta_path, 'r', encoding='utf-8').read().strip() if os.path.exists(meta_path) else ''
+            except Exception:
+                meta_text = ''
+
+            row = rows_by_rel.get(rel)
+            lines.append(f'\nVIDEO {i} of {len(rel_paths)}')
+            lines.append('-' * 40)
+            for key in ('title', 'author', 'url', 'youtube_id', 'publish_date',
+                        'duration', 'channel_id'):
+                val = fm.get(key)
+                if val:
+                    lines.append(f'{key}: {val}')
+            if row and row.user_rating is not None:
+                lines.append(f'user_rating: {row.user_rating:.1f} / 10')
+            if row and row.model_rating is not None:
+                lines.append(f'model_rating (user interest model): {row.model_rating:.2f} / 10')
+            if row and row.last_viewed:
+                lines.append(f'last_viewed: {row.last_viewed.isoformat()}')
+            if meta_text:
+                lines.append('')
+                lines.append('--- description / transcript ---')
+                lines.append(meta_text)
+            lines.append('')
+            found += 1
+
+        if not found:
+            return {'prompt': 'Could not read any of the selected video files.'}
+
+        return {'prompt': '\n'.join(lines)}
+
     # ── .meta file handlers ──────────────────────────────────────────────
     class _MetaReader:
         def generate_full_description(self, full_path, media_folder):
@@ -531,6 +617,8 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None,
     # ── Startup tasks ─────────────────────────────────────────────────────
     task_manager.submit('YouTube: convert PNG previews to JPEG',
                         lambda ctx: tasks.task_migrate_png_previews(ctx, deps))
+    task_manager.submit('YouTube: backfill publish dates',
+                        lambda ctx: tasks.backfill_publish_dates(deps.storage_dir))
     if tasks.find_folders_to_migrate(storage_dir):
         task_manager.submit('YouTube: migrate channel folder names',
                             lambda ctx: tasks.task_migrate_channel_folders(ctx, deps))
@@ -548,13 +636,18 @@ def init_socket_events(socketio: SocketIO, app: Flask = None, cfg=None,
         cfg, 'YouTube.channel_update_recent_count', default=15))
 
     schedule_task(app, channel_update_interval,
-                  lambda: task_manager.submit(
-                      'YouTube: sync channel updates',
-                      lambda ctx: tasks.task_sync_channels(ctx, deps)))
+                lambda: task_manager.submit(
+                    'YouTube: sync channel updates',
+                    lambda ctx: tasks.task_sync_channels(ctx, deps)))
 
     schedule_task(app, transcript_backfill_interval,
-                  lambda: task_manager.submit(
-                      'YouTube: backfill transcripts',
-                      lambda ctx: tasks.task_backfill_transcripts(ctx, deps)))
+                lambda: task_manager.submit(
+                    'YouTube: backfill transcripts',
+                    lambda ctx: tasks.task_backfill_transcripts(ctx, deps)))
+
+    schedule_task(app, precise_date_backfill_interval,
+                lambda: task_manager.submit(
+                    'YouTube: backfill precise publish dates',
+                    lambda ctx: tasks.task_backfill_precise_dates(ctx, deps)), start_immediately=True)
 
     common_socket_events.show_loading_status('YouTube module ready!')

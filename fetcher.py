@@ -360,6 +360,15 @@ def fetch_video_info(url: str) -> dict | None:
     upload_date = info.get('upload_date', '')
     if upload_date and len(upload_date) == 8:
         upload_date = f"{upload_date[:4]}-{upload_date[4:6]}-{upload_date[6:8]}"
+    # Prefer the full Unix timestamp when available — it carries the exact
+    # publish time, not just the date.  Fall back to the date-only string.
+    ts = info.get('timestamp')
+    if ts:
+        try:
+            import datetime as _dt
+            upload_date = _dt.datetime.utcfromtimestamp(float(ts)).strftime('%Y-%m-%dT%H:%M:%S')
+        except Exception:
+            pass
 
     # Pick the best available thumbnail URL
     thumbnail_url = info.get('thumbnail', '')

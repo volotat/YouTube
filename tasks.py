@@ -20,11 +20,13 @@ from PIL import Image
 import modules.YouTube.db_models as db_models
 from modules.YouTube.fetcher import (
     HASH_ALGORITHM,
+    build_frontmatter,
     fetch_video_info,
     fetch_channel_recent_videos,
     iter_channel_dirs,
     find_channel_folder,
     make_channel_folder_name,
+    parse_frontmatter,
     store_video,
     write_channel_yaml,
     read_channel_yaml,
@@ -52,6 +54,7 @@ class Deps:
     engine: Any                        # YoutubeTextEngine instance
     channel_update_recent_count: int = 50
     transcript_backfill_batch: int = 50
+    precise_date_backfill_batch: int = 100
 
     @property
     def cookies_file(self) -> str | None:
@@ -85,6 +88,15 @@ def upsert_video_db(app, result: dict, video_info: dict,
         if user_rating is not None:
             row.user_rating = float(user_rating)
             row.user_rating_date = datetime.datetime.utcnow()
+        pub_str = video_info.get('publish_date', '')
+        if pub_str:
+            try:
+                pub_dt = datetime.datetime.fromisoformat(str(pub_str))
+                if pub_dt.tzinfo is not None:
+                    pub_dt = pub_dt.replace(tzinfo=None)
+                row.publish_date = pub_dt
+            except Exception:
+                pass
         db_models.db.session.commit()
         return row.id
 
@@ -197,6 +209,49 @@ def heal_file_paths(storage_dir: str) -> int:
     if updated:
         db_models.db.session.commit()
         print(f'[YouTube] heal_file_paths: updated {updated} stale path(s).')
+    return updated
+
+
+def backfill_publish_dates(storage_dir: str) -> int:
+    """Populate publish_date for any DB rows that are missing it.
+
+    Reads the YAML front-matter of each .link file only for rows where
+    publish_date IS NULL, so the walk is short-circuited as the DB fills up.
+    Returns the number of rows updated.
+    """
+    rows = db_models.YoutubeLibrary.query.filter(
+        db_models.YoutubeLibrary.publish_date.is_(None),
+        db_models.YoutubeLibrary.file_path.isnot(None),
+    ).all()
+    if not rows:
+        return 0
+
+    updated = 0
+    for row in rows:
+        abs_path = (os.path.join(storage_dir, row.file_path)
+                    if not os.path.isabs(row.file_path) else row.file_path)
+        if not os.path.isfile(abs_path):
+            continue
+        try:
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                fm, _ = parse_frontmatter(f.read())
+        except Exception:
+            continue
+        pub_str = fm.get('publish_date', '')
+        if not pub_str:
+            continue
+        try:
+            pub_dt = datetime.datetime.fromisoformat(str(pub_str))
+            if pub_dt.tzinfo is not None:
+                pub_dt = pub_dt.replace(tzinfo=None)
+            row.publish_date = pub_dt
+            updated += 1
+        except Exception:
+            continue
+
+    if updated:
+        db_models.db.session.commit()
+        print(f'[YouTube] backfill_publish_dates: filled {updated} row(s).')
     return updated
 
 
@@ -476,3 +531,100 @@ def task_backfill_transcripts(ctx, deps: Deps) -> None:
 
     ctx.update(1.0, f'Backfilled {added}/{total} transcript(s).')
     print(f'[YouTube] Transcript backfill done — {added}/{total} fetched.')
+
+
+def task_backfill_precise_dates(ctx, deps: Deps) -> None:
+    """Upgrade date-only publish_date values to full UTC datetimes.
+
+    yt-dlp's upload_date field was historically date-only (YYYY-MM-DD), so
+    older DB rows store a midnight timestamp (00:00:00).  This task queries
+    the DB for those rows — which is fast and avoids a full filesystem walk —
+    then reads only the matching .link files to confirm and re-fetches the
+    precise Unix timestamp from YouTube.
+
+    Processes in batches to avoid hammering the network in a single run.
+    Safe to re-run: already-precise entries are skipped automatically.
+    """
+    from sqlalchemy import func as _sqla_func
+
+    midnight_filter = (
+        db_models.YoutubeLibrary.publish_date.isnot(None),
+        db_models.YoutubeLibrary.file_path.isnot(None),
+        _sqla_func.strftime('%H:%M:%S', db_models.YoutubeLibrary.publish_date) == '00:00:00',
+    )
+    remaining_count = db_models.YoutubeLibrary.query.filter(*midnight_filter).count()
+    if not remaining_count:
+        return
+
+    candidate_rows = (db_models.YoutubeLibrary.query
+                      .filter(*midnight_filter)
+                      .limit(deps.precise_date_backfill_batch)
+                      .all())
+
+    total = len(candidate_rows)
+    updated = 0
+    print(f'[YouTube] Precise date backfill: {total} video(s) to process '
+          f'({remaining_count} total remaining).')
+
+    for i, row in enumerate(candidate_rows):
+        ctx.check()
+        vid_id = row.url
+        ctx.update((i + 1) / total, f'Fetching precise date {i + 1}/{total}: {vid_id}…')
+
+        abs_path = (os.path.join(deps.storage_dir, row.file_path)
+                    if not os.path.isabs(row.file_path) else row.file_path)
+        if not os.path.isfile(abs_path):
+            continue
+
+        # Read .link file to get current frontmatter/body for the write-back
+        try:
+            with open(abs_path, 'r', encoding='utf-8') as f:
+                fm, body = parse_frontmatter(f.read())
+        except Exception:
+            continue
+
+        # Sanity check: if the file already has a precise datetime, just sync DB
+        pub = str(fm.get('publish_date', ''))
+        if pub and 'T' in pub:
+            try:
+                pub_dt = datetime.datetime.fromisoformat(pub)
+                if pub_dt.tzinfo is not None:
+                    pub_dt = pub_dt.replace(tzinfo=None)
+                row.publish_date = pub_dt
+                db_models.db.session.commit()
+            except Exception:
+                pass
+            continue
+
+        try:
+            info = fetch_video_info(f'https://www.youtube.com/watch?v={vid_id}')
+            if not info:
+                continue
+            new_date = info.get('publish_date', '')
+            # Only proceed if we got a genuine datetime (has 'T')
+            if not new_date or 'T' not in new_date:
+                continue
+
+            # Update .link file frontmatter, preserving the body
+            fm['publish_date'] = new_date
+            new_content = build_frontmatter(fm)
+            if body:
+                new_content += body
+            with open(abs_path, 'w', encoding='utf-8') as f:
+                f.write(new_content)
+
+            # Update DB row
+            try:
+                pub_dt = datetime.datetime.fromisoformat(new_date)
+                if pub_dt.tzinfo is not None:
+                    pub_dt = pub_dt.replace(tzinfo=None)
+                row.publish_date = pub_dt
+                db_models.db.session.commit()
+            except Exception:
+                pass
+            updated += 1
+        except Exception as exc:
+            print(f'[YouTube] precise date backfill error for {vid_id}: {exc}')
+
+    ctx.update(1.0, f'Updated {updated}/{total} precise date(s).')
+    print(f'[YouTube] Precise date backfill done — {updated}/{total} updated.')

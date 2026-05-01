@@ -19,5 +19,12 @@ YouTube:
   # How often (minutes) to run the transcript backfill task.
   # Fetches subtitles for existing videos whose .meta files lack transcripts.
   transcript_backfill_interval_minutes: 40
-  # How many videos to process per backfill cycle.
+  # How many videos to process per backfill cycle (shared by both backfill tasks).
   transcript_backfill_batch_size: 50
+  # How often (minutes) to run the precise-date backfill task.
+  # Gradually upgrades date-only publish_date values to full UTC datetimes by
+  # re-fetching the Unix timestamp from YouTube for each affected video.
+  # Set to 0 to disable.
+  precise_date_backfill_interval_minutes: 15
+  # How many videos to upgrade per precise-date backfill cycle.
+  precise_date_backfill_batch_size: 200

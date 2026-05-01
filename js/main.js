@@ -5,9 +5,24 @@ import PaginationComponent from '/modules/PaginationComponent.js';
 import SearchBarComponent from '/modules/SearchBarComponent.js';
 import ContextMenuComponent from '/modules/ContextMenuComponent.js';
 import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
+import MetaEditor from '/modules/MetaEditor.js';
 
 (function() {
   const PAGE_LIMIT = 24;
+
+  // ── Selection state ───────────────────────────────────────────────────
+  let selected_files = [];
+  let lastActivatedCheckbox = null;
+
+  function selectCheckbox(checkbox, isChecked) {
+    checkbox.checked = isChecked;
+    const filePath = checkbox.dataset.filePath;
+    if (isChecked) {
+      if (!selected_files.includes(filePath)) selected_files.push(filePath);
+    } else {
+      selected_files = selected_files.filter(v => v !== filePath);
+    }
+  }
 
   // ── URL state ─────────────────────────────────────────────────────────
   const urlParams = new URLSearchParams(window.location.search);
@@ -34,7 +49,7 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
 
   function createContextMenu(fileData, event) {
     const info = fileData.file_info || {};
-    ctxMenu.show(event.pageX, event.pageY, [
+    const menuItems = [
       {
         label: 'Play',
         icon: 'fas fa-play',
@@ -50,7 +65,39 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
         icon: 'fas fa-info-circle',
         action: () => openFullDescription(fileData),
       },
-    ]);
+    ];
+
+    // Only show Summarize when there are selected files
+    if (selected_files.length > 0) {
+      menuItems.push({ type: 'divider' });
+      menuItems.push({
+        label: `📋 Summarize ${selected_files.length} selected`,
+        action: () => _runSummarize(),
+      });
+    }
+
+    ctxMenu.show(event.pageX, event.pageY, menuItems);
+  }
+
+  // ── Summarize selected ────────────────────────────────────────────────
+  const _summarizeEditor = new MetaEditor({
+    readOnly: true,
+    api: {
+      load(_filePath, onLoaded) { onLoaded(''); },
+      save() {},
+    },
+  });
+
+  function _runSummarize() {
+    if (selected_files.length === 0) { alert('No videos selected.'); return; }
+    const count = selected_files.length;
+    _summarizeEditor.$title.textContent = `Summarize — ${count} video${count !== 1 ? 's' : ''}`;
+    _summarizeEditor.$textarea.value = `Building summarization prompt for ${count} video${count !== 1 ? 's' : ''}…`;
+    _summarizeEditor.modal.classList.add('is-active');
+    document.documentElement.classList.add('is-clipped');
+    socket.emit('emit_youtube_page_summarize_selected', { file_paths: selected_files }, (response) => {
+      _summarizeEditor.$textarea.value = (response && response.prompt) || 'No data returned.';
+    });
   }
 
   // ── Render helpers ────────────────────────────────────────────────────
@@ -132,6 +179,52 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
     wrap.appendChild(modelRating);
 
     return wrap;
+  }
+
+  // ── renderActions: checkbox per tile ─────────────────────────────────
+  function renderActions(fileData) {
+    const levelContainer = document.createElement('div');
+    levelContainer.className = 'level is-gapless mt-1';
+
+    const levelLeft = document.createElement('div');
+    levelLeft.className = 'level-left';
+    const levelRight = document.createElement('div');
+    levelRight.className = 'level-right';
+    levelContainer.appendChild(levelLeft);
+    levelContainer.appendChild(levelRight);
+
+    const checkboxLabel = document.createElement('label');
+    checkboxLabel.className = 'b-checkbox checkbox is-large mr-0';
+    checkboxLabel.innerHTML = `<input type="checkbox" value="false"><span class="check is-success"></span>`;
+    checkboxLabel.addEventListener('click', e => e.stopPropagation());
+    const input = checkboxLabel.querySelector('input');
+    input.dataset.filePath = fileData.full_path;
+
+    input.onclick = function(event) {
+      event.stopPropagation();
+      const isShiftPressed = event.shiftKey;
+      const checkboxes = Array.from(
+        document.querySelectorAll('#youtube_files_grid_container input[type="checkbox"]'));
+      const isChecked = this.checked;
+
+      if (isShiftPressed) {
+        if (!isChecked) lastActivatedCheckbox = null;
+        if (lastActivatedCheckbox === null) {
+          checkboxes.forEach(cb => selectCheckbox(cb, isChecked));
+        } else {
+          let start = checkboxes.indexOf(lastActivatedCheckbox);
+          let end   = checkboxes.indexOf(this);
+          if (start > end) [start, end] = [end, start];
+          checkboxes.slice(start, end + 1).forEach(cb => selectCheckbox(cb, isChecked));
+        }
+      } else {
+        lastActivatedCheckbox = isChecked ? this : null;
+        selectCheckbox(this, isChecked);
+      }
+    };
+
+    levelRight.appendChild(checkboxLabel);
+    return levelContainer;
   }
 
   // ── Player modal ──────────────────────────────────────────────────────
@@ -483,6 +576,7 @@ import createModuleMetaEditors from '/modules/ModuleMetaEditors.js';
         filesData: response.files_data,
         renderPreviewContent: renderPreview,
         renderCustomData: renderCustomData,
+        renderActions: renderActions,
         handleFileClick: openPlayer,
         minTileWidth: '18rem',
         onContextMenu: createContextMenu,

@@ -1,5 +1,14 @@
 # YouTube Module - Changelog
 
+### Version 0.3.15.6 [for Anagnorisis ≥ 0.3.15] (02.05.2026)
+*   **Summarize selected videos**
+    *   Each video tile now has a checkbox. Select any number of videos, then right-click any tile and choose "📋 Summarize N selected" to generate a focused summarization prompt for exactly those videos. The prompt opens in the same read-only editor. Right now you expect to post it in the capable model like Gemini-3.1, but in the future the whole summary are going to be generated completely locally.
+    *   Shift-click selects a range of checkboxes at once.
+
+*   **Publish date precision**
+    *   Previously, publish dates were stored as date-only values (midnight), which caused videos to sometimes fall outside time-window filters. The importer now stores the exact UTC publish time down to the second.
+    *   A background task gradually upgrades existing date-only entries by re-fetching the precise timestamp from YouTube, processing up to 100 videos every 30 minutes. Configurable via `precise_date_backfill_interval_minutes` and `precise_date_backfill_batch_size`.
+
 ### Version 0.3.15.5 [for Anagnorisis ≥ 0.3.15] (01.05.2026)
 *   **Scheduler**
     *   Channel sync and transcript backfill tasks were being queued multiple times in parallel instead of waiting for the previous run to finish. Now fixed.
